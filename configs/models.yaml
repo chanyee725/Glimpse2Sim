@@ -1,0 +1,28 @@
+# Verify model IDs and prices against each provider's pricing page before a run.
+# Prices are USD per 1M tokens. Thinking/reasoning tokens are billed as output.
+models:
+  claude:
+    provider: anthropic
+    model_id: claude-fable-5-1
+    max_output_tokens: 64000
+    effort: high
+    pricing: {input: 10.00, output: 50.00}
+
+  gpt:
+    provider: openai
+    model_id: gpt-6-astra          # TODO: confirm exact ID in the OpenAI dashboard
+    max_output_tokens: 64000
+    reasoning_effort: high
+    pricing: {input: 10.00, output: 50.00}
+
+  gemini-argon:
+    provider: google
+    model_id: gemini-4-argon
+    max_output_tokens: 64000
+    pricing: {input: 2.00, output: 10.00}   # intro price until 2026-11-30, then 4.00 / 20.00
+
+  gemini-er:
+    provider: google
+    model_id: gemini-robotics-er-2-preview
+    max_output_tokens: 64000
+    pricing: {input: 2.00, output: 10.00}   # some sources report a temporary 1.00 / 5.00
