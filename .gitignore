@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+*.egg-info/
+
+# Local research notes
+docs/
+
+data/*
+!data/.gitkeep
+experiments/*
+!experiments/.gitkeep
+
+# LaTeX
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+paper/*.synctex.gz
+paper/main.pdf

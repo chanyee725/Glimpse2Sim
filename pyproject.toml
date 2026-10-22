@@ -1,0 +1,47 @@
+[project]
+name = "glimpse2sim"
+version = "0.1.0"
+description = "Can foundation models build robot worlds from a few glimpses?"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "anthropic>=2.1.0",
+    "google-genai>=2.32.0",
+    "isaaclab[isaacsim]==3.0.0",
+    "numpy",
+    "openai>=3.36.1",
+    "opencv-python>=5.0.0.93",
+    "pydantic>=2.14.1",
+    "pyrealsense2>=2.59.1.11053",
+    "python-dotenv>=1.2.4",
+    "pyyaml>=6.0.3",
+    "tinyobjloader==2.0.0rc13",
+    "torch==2.11.0",
+    "torchvision==0.26.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["glimpse2sim*"]
+
+[[tool.uv.index]]
+name = "nvidia"
+url = "https://pypi.nvidia.com"
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
+
+[tool.uv]
+# isaacsim 6.2.0.0 pins urllib3==2.7.0 while isaaclab 3.0.0 requires urllib3>=2.8.0.
+# isaacsim-kernel 6.2.0.0 pins idna==3.10 while httpx2 (anthropic 2.x) requires idna>=3.18.
+override-dependencies = ["urllib3>=2.8.0", "idna>=3.18"]
+# Isaac Sim packages are split between pypi.nvidia.com and PyPI; both are trusted.
+index-strategy = "unsafe-best-match"
