@@ -2,15 +2,17 @@ import base64
 
 import openai
 
-from .base import Image, VisionModel
+from .base import CallResult, Image, VisionModel
 
 
 class GPTModel(VisionModel):
+    # Reasoning summaries are not wired up yet, so `thinking` stays empty.
+
     def __init__(self, name: str, cfg: dict):
         super().__init__(name, cfg)
         self.client = openai.OpenAI()
 
-    def _call(self, prompt, images: list[Image], system):
+    def _call(self, prompt, images: list[Image], system, on_thought):
         content = [
             {
                 "type": "input_image",
@@ -29,4 +31,4 @@ class GPTModel(VisionModel):
             store=False,  # do not keep captured images on the provider side
         )
         stop = resp.incomplete_details.reason if resp.incomplete_details else resp.status
-        return resp.output_text, resp.usage.input_tokens, resp.usage.output_tokens, stop
+        return CallResult(resp.output_text, resp.usage.input_tokens, resp.usage.output_tokens, stop)

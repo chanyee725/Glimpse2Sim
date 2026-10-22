@@ -13,8 +13,9 @@ def build_model(name: str) -> VisionModel:
     return PROVIDERS[cfg["provider"]](name, cfg)
 
 
-def model_names() -> list[str]:
-    return list(load_config("models")["models"])
+def model_names(include_debug: bool = True) -> list[str]:
+    models = load_config("models")["models"]
+    return [n for n, cfg in models.items() if include_debug or not cfg.get("debug")]
 
 
 __all__ = ["Image", "ModelResponse", "VisionModel", "build_model", "model_names"]

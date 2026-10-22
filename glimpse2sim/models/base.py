@@ -1,8 +1,12 @@
 import mimetypes
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+# Receives the model's thinking text as it streams in.
+ThoughtCallback = Callable[[str], None]
 
 
 @dataclass
@@ -17,19 +21,29 @@ class Image:
 
 
 @dataclass
+class CallResult:
+    text: str
+    input_tokens: int
+    output_tokens: int  # includes thinking/reasoning tokens
+    stop_reason: str | None
+    thinking: str = ""  # thinking summary, when the provider returns one
+
+
+@dataclass
 class ModelResponse:
     model: str  # alias from configs/models.yaml
     model_id: str  # exact provider model ID, recorded for reproducibility
     text: str
+    thinking: str
     input_tokens: int
-    output_tokens: int  # includes thinking/reasoning tokens
+    output_tokens: int
     cost_usd: float
     latency_s: float
     stop_reason: str | None
 
 
 class VisionModel(ABC):
-    """Common interface: images + prompt in, text + usage + cost out."""
+    """Common interface: images + prompt in, text + thinking + usage + cost out."""
 
     def __init__(self, name: str, cfg: dict):
         self.name = name
@@ -42,22 +56,28 @@ class VisionModel(ABC):
     def cost(self, input_tokens: int, output_tokens: int) -> float:
         return (input_tokens * self.price_in + output_tokens * self.price_out) / 1e6
 
-    def generate(self, prompt: str, images: list[Image], system: str | None = None) -> ModelResponse:
+    def generate(
+        self,
+        prompt: str,
+        images: list[Image],
+        system: str | None = None,
+        on_thought: ThoughtCallback | None = None,
+    ) -> ModelResponse:
         start = time.perf_counter()
-        text, n_in, n_out, stop = self._call(prompt, images, system)
+        r = self._call(prompt, images, system, on_thought or (lambda _: None))
         return ModelResponse(
             model=self.name,
             model_id=self.model_id,
-            text=text,
-            input_tokens=n_in,
-            output_tokens=n_out,
-            cost_usd=self.cost(n_in, n_out),
+            text=r.text,
+            thinking=r.thinking,
+            input_tokens=r.input_tokens,
+            output_tokens=r.output_tokens,
+            cost_usd=self.cost(r.input_tokens, r.output_tokens),
             latency_s=time.perf_counter() - start,
-            stop_reason=stop,
+            stop_reason=r.stop_reason,
         )
 
     @abstractmethod
     def _call(
-        self, prompt: str, images: list[Image], system: str | None
-    ) -> tuple[str, int, int, str | None]:
-        """Return (text, input_tokens, output_tokens, stop_reason)."""
+        self, prompt: str, images: list[Image], system: str | None, on_thought: ThoughtCallback
+    ) -> CallResult: ...

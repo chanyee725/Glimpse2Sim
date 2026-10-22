@@ -26,3 +26,12 @@ models:
     model_id: gemini-robotics-er-2-preview
     max_output_tokens: 64000
     pricing: {input: 2.00, output: 10.00}   # some sources report a temporary 1.00 / 5.00
+
+  # Debugging only (not a compared model): checks the pipeline on the free tier.
+  # Free-tier inputs may be used by Google to improve its products.
+  gemini-flash:
+    provider: google
+    model_id: gemini-3.8-flash
+    debug: true                          # excluded from --model all
+    max_output_tokens: 64000
+    pricing: {input: 0.00, output: 0.00}   # free tier; set paid prices if billing is enabled
