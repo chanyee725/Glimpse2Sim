@@ -9,7 +9,7 @@ dependencies = [
     "isaaclab[isaacsim]==3.0.0",
     "numpy",
     "openai>=3.36.1",
-    "opencv-python>=5.0.0.93",
+    "opencv-python==4.14.0.94",
     "pydantic>=2.14.1",
     "pyrealsense2>=2.59.1.11053",
     "python-dotenv>=1.2.4",
@@ -42,6 +42,12 @@ torchvision = { index = "pytorch-cu130" }
 [tool.uv]
 # isaacsim 6.2.0.0 pins urllib3==2.7.0 while isaaclab 3.0.0 requires urllib3>=2.8.0.
 # isaacsim-kernel 6.2.0.0 pins idna==3.10 while httpx2 (anthropic 2.x) requires idna>=3.18.
-override-dependencies = ["urllib3>=2.8.0", "idna>=3.18"]
+# isaacsim-core pulls a headless OpenCV that overwrites cv2 and disables cv2.imshow;
+# drop it (marker never matches) and use opencv-python 4.14 with GUI support instead.
+override-dependencies = [
+    "urllib3>=2.8.0",
+    "idna>=3.18",
+    "opencv-python-headless-noffmpeg; sys_platform == 'never'",
+]
 # Isaac Sim packages are split between pypi.nvidia.com and PyPI; both are trusted.
 index-strategy = "unsafe-best-match"
