@@ -6,6 +6,43 @@ import cv2
 import numpy as np
 import pyrealsense2 as rs
 
+from ..config import ROOT
+
+OUTPUT_DIR = ROOT / "outputs"
+
+
+def output_dir(name, camera: str = "d435") -> Path:
+    """outputs/<camera>/<name>, where name is any run argument converted to a string."""
+    return OUTPUT_DIR / camera / str(name)
+
+
+def detect_camera(cameras: dict) -> str:
+    """Return the configs/cameras.yaml key of the connected RealSense camera."""
+    devices = rs.context().query_devices()
+    if len(devices) == 0:
+        raise RuntimeError("no RealSense camera connected")
+    dev = devices[0]
+    serial = dev.get_info(rs.camera_info.serial_number)
+    for key, cfg in cameras.items():
+        if cfg.get("serial") == serial:
+            return key
+    # No serial match: fall back to the model name, e.g. "Intel RealSense D435I" -> "d435i".
+    key = dev.get_info(rs.camera_info.name).split()[-1].lower()
+    if key not in cameras:
+        raise RuntimeError(f"connected camera {key!r} has no entry in configs/cameras.yaml")
+    return key
+
+
+def find_scene(name) -> tuple[str, Path]:
+    """Find outputs/<camera>/<name> without knowing the camera; return (camera, scene_dir)."""
+    matches = [p for p in OUTPUT_DIR.glob(f"*/{name}") if p.is_dir()]
+    if not matches:
+        raise FileNotFoundError(f"no captured scene named {name!r} under {OUTPUT_DIR}")
+    if len(matches) > 1:
+        cams = ", ".join(p.parent.name for p in matches)
+        raise RuntimeError(f"scene {name!r} exists for several cameras ({cams}); pass --camera")
+    return matches[0].parent.name, matches[0]
+
 
 @dataclass
 class Intrinsics:
@@ -60,7 +97,7 @@ class RGBDFrame:
 
 
 class D435Camera:
-    """Aligned RGB-D capture from a RealSense D435.
+    """Aligned RGB-D capture from a RealSense D435 or D435i (the D435i IMU is not used).
 
     with D435Camera(cfg) as cam:
         frame = cam.capture()

@@ -13,3 +13,18 @@ d435:
   warmup_frames: 30       # let auto-exposure settle before capturing
   # Fixed range for the colorized depth image sent to models, so every capture uses the same color scale.
   depth_vis_range_m: [0.2, 1.5]
+
+# Intel RealSense D435i. Same RGB-D streams as the D435; the IMU is not used for scene capture.
+d435i:
+  serial: null
+  color:
+    width: 1280
+    height: 720
+    fps: 30
+  depth:
+    width: 1280
+    height: 720
+    fps: 30
+  align_to_color: true
+  warmup_frames: 30
+  depth_vis_range_m: [0.2, 1.5]

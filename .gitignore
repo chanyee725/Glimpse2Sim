@@ -9,6 +9,7 @@ docs/
 
 data/*
 !data/.gitkeep
+outputs/
 experiments/*
 !experiments/.gitkeep
 
