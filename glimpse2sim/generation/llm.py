@@ -10,7 +10,8 @@ from pathlib import Path
 
 from ..config import CONFIG_DIR, ROOT, load_config
 from ..models import Image, build_model
-from .scene import write_placements
+from .boxes import draw_boxes
+from .translate import translate_thinking
 
 PROMPT_DIR = CONFIG_DIR / "prompts"
 
@@ -21,10 +22,16 @@ def _rel(path: Path) -> str:
     return str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path)
 
 
-def scene_images(scene_dir: Path, with_depth: bool = True) -> list[Path]:
-    paths = sorted(scene_dir.glob("*_color.png"))
+def scene_images(scene_dir: Path, with_depth: bool = True, frames: list[str] | None = None) -> list[Path]:
+    """Color images, then depth images, of the given frames in that order (default: all frames)."""
+    if frames is None:
+        frames = sorted(p.name.removesuffix("_color.png") for p in scene_dir.glob("*_color.png"))
+    paths = [scene_dir / f"{f}_color.png" for f in frames]
     if with_depth:
-        paths += sorted(scene_dir.glob("*_depth_vis.png"))
+        paths += [scene_dir / f"{f}_depth_vis.png" for f in frames]
+    missing = [p.name for p in paths if not p.exists()]
+    if missing:
+        raise FileNotFoundError(f"missing in {scene_dir}: {', '.join(missing)}")
     return paths
 
 
@@ -37,7 +44,8 @@ def load_prompts(camera: str) -> tuple[str, str]:
         .replace("{depth_near_m}", str(near))
         .replace("{depth_far_m}", str(far))
     )
-    return system, (PROMPT_DIR / "scene_generation.md").read_text()
+    textures = "\n".join(f"  - `{name}`: {t['looks_like']}" for name, t in load_config("textures").items())
+    return system, (PROMPT_DIR / "scene_generation.md").read_text().replace("{texture_list}", textures)
 
 
 def parse_json(text: str) -> dict | None:
@@ -49,20 +57,27 @@ def parse_json(text: str) -> dict | None:
         return None
 
 
-def generate_scene(model_name: str, scene_dir: Path, camera: str, with_depth: bool = True) -> Path:
+def generate_scene(
+    model_name: str, scene_dir: Path, camera: str, with_depth: bool = True, frames: list[str] | None = None
+) -> Path:
     """Run one model on one captured scene and write everything to scene_dir/generations/<model>_<time>/.
 
     thinking.log  model's thinking, streamed as it arrives
+    thinking_ko.md  Korean translation of thinking.log, for reading only
     scene.json    parsed scene spec (missing if the output was not valid JSON)
-    placements.json  object offsets from the desk's back-left corner, in mm (only with a desk)
+    *_boxes.png   sent color images with the model's 2D boxes and object ids drawn on
     response.txt  raw model output
     run.json      model ID, tokens, cost, latency, inputs
     """
-    image_paths = scene_images(scene_dir, with_depth)
+    image_paths = scene_images(scene_dir, with_depth, frames)
     if not image_paths:
         raise FileNotFoundError(f"no *_color.png in {scene_dir}")
     images = [Image.from_path(p) for p in image_paths]
     system, prompt = load_prompts(camera)
+    # Models never see file names, so name each image's view in the order the images are sent.
+    prompt += "\n\nImages, in the order given:\n" + "\n".join(
+        f"{i}. {p.name.removesuffix('.png')}" for i, p in enumerate(image_paths, 1)
+    )
     model = build_model(model_name)
 
     run_dir = scene_dir / "generations" / f"{model_name}_{datetime.now():%Y%m%d_%H%M%S}"
@@ -84,8 +99,7 @@ def generate_scene(model_name: str, scene_dir: Path, camera: str, with_depth: bo
     scene = parse_json(resp.text)
     if scene is not None:
         (run_dir / "scene.json").write_text(json.dumps(scene, indent=2, ensure_ascii=False))
-        if write_placements(run_dir) is None:
-            log.info("no desk in the spec; placements.json not written")
+        draw_boxes(scene, image_paths, run_dir)
     else:
         log.warning("output is not valid JSON; see response.txt")
 
@@ -104,4 +118,5 @@ def generate_scene(model_name: str, scene_dir: Path, camera: str, with_depth: bo
         model_name, resp.input_tokens, resp.output_tokens, resp.cost_usd,
         resp.latency_s, resp.stop_reason, record["num_objects"],
     )
+    translate_thinking(run_dir)
     return run_dir

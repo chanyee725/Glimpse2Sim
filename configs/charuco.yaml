@@ -1,0 +1,4 @@
+dictionary: DICT_5X5_50
+squares: [6, 7]     # columns, rows
+square_m: 0.030
+marker_m: 0.022

@@ -1,10 +1,11 @@
 from ..config import load_config
 from .base import Image, ModelResponse, VisionModel
+from .chat import ChatCompletionsModel
 from .claude import ClaudeModel
 from .gemini import GeminiModel
 from .gpt import GPTModel
 
-PROVIDERS = {"anthropic": ClaudeModel, "openai": GPTModel, "google": GeminiModel}
+PROVIDERS = {"anthropic": ClaudeModel, "openai": GPTModel, "google": GeminiModel, "zai": ChatCompletionsModel}
 
 
 def build_model(name: str) -> VisionModel:

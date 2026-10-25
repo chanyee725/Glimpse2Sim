@@ -27,6 +27,16 @@ models:
     max_output_tokens: 64000
     pricing: {input: 2.00, output: 10.00}   # some sources report a temporary 1.00 / 5.00
 
+  # Low-cost reference point, not one of the main compared models.
+  glm:
+    provider: zai
+    model_id: glm-4.6v-flashx              # TODO: confirm the exact ID; docs.z.ai only shows "glm-4.6v"
+    base_url: https://api.z.ai/api/paas/v4/
+    api_key_env: ZAI_API_KEY
+    thinking: true
+    max_output_tokens: 16000
+    pricing: {input: 0.04, output: 0.40}   # docs.z.ai pricing page, 2026-10-24
+
   # Debugging only (not a compared model): checks the pipeline on the free tier.
   # Free-tier inputs may be used by Google to improve its products.
   gemini-flash:

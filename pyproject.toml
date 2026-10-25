@@ -14,6 +14,7 @@ dependencies = [
     "pyrealsense2>=2.59.1.11053",
     "python-dotenv>=1.2.4",
     "pyyaml>=6.0.3",
+    "rerun-sdk>=0.31.4",
     "tinyobjloader==2.0.0rc13",
     "torch==2.11.0",
     "torchvision==0.26.0",

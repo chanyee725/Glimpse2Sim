@@ -2,12 +2,12 @@
 d435:
   serial: null            # null = first connected device
   color:
-    width: 1280
-    height: 720
+    width: 1920
+    height: 1080
     fps: 30
   depth:
-    width: 1280
-    height: 720
+    width: 848
+    height: 480
     fps: 30
   align_to_color: true    # depth is reprojected onto the color image grid
   warmup_frames: 30       # let auto-exposure settle before capturing

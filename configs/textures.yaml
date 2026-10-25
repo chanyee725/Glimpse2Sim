@@ -1,0 +1,33 @@
+# Textured materials a model may pick for `texture`, by name. Paths are under
+# {NVIDIA_NUCLEUS_DIR}/Materials/Base/ on the Isaac Sim 6.2 asset server (each checked to exist, 2026-10-25).
+# A texture replaces color_rgb, roughness and metallic with its own fixed colors, so only textures whose look
+# does not depend on a color are listed (no plain colored plastic); plain-colored surfaces leave `texture` null.
+# `color` is the texture's typical sRGB look: a texture whose color is far from the model's color_rgb is ignored.
+oak_wood:            {path: Wood/Oak.mdl,                    looks_like: "light oak wood grain", color: [0.72, 0.53, 0.34]}
+ash_wood:            {path: Wood/Ash.mdl,                    looks_like: "pale ash wood grain", color: [0.80, 0.68, 0.52]}
+birch_wood:          {path: Wood/Birch.mdl,                  looks_like: "very light birch wood", color: [0.86, 0.76, 0.60]}
+walnut_wood:         {path: Wood/Walnut.mdl,                 looks_like: "dark brown walnut wood", color: [0.36, 0.24, 0.16]}
+bamboo:              {path: Wood/Bamboo.mdl,                 looks_like: "bamboo strips", color: [0.80, 0.66, 0.42]}
+plywood:             {path: Wood/Plywood.mdl,                looks_like: "plywood, layered edge", color: [0.78, 0.64, 0.46]}
+wood_floor:          {path: Wood/Parquet_Floor.mdl,          looks_like: "parquet floor planks", color: [0.62, 0.44, 0.28]}
+beadboard:           {path: Wood/Beadboard.mdl,              looks_like: "painted grooved wood panel", color: [0.90, 0.90, 0.88]}
+textured_rubber:     {path: Plastics/Rubber_Textured.mdl,    looks_like: "black textured rubber", color: [0.10, 0.10, 0.10]}
+clear_plastic:       {path: Plastics/Plastic_Clear.mdl,      looks_like: "transparent plastic", color: [0.90, 0.92, 0.94]}
+aluminum_anodized:   {path: Metals/Aluminum_Anodized.mdl,    looks_like: "anodized aluminum (laptops, phones)", color: [0.70, 0.71, 0.73]}
+aluminum_polished:   {path: Metals/Aluminum_Polished.mdl,    looks_like: "polished aluminum", color: [0.80, 0.80, 0.82]}
+stainless_steel:     {path: Metals/Steel_Stainless.mdl,      looks_like: "brushed stainless steel", color: [0.66, 0.66, 0.66]}
+carbon_steel:        {path: Metals/Steel_Carbon.mdl,         looks_like: "dark raw steel", color: [0.32, 0.32, 0.33]}
+chrome:              {path: Metals/Chrome.mdl,               looks_like: "mirror chrome", color: [0.85, 0.85, 0.87]}
+iron:                {path: Metals/Iron.mdl,                 looks_like: "cast iron", color: [0.36, 0.35, 0.34]}
+copper_antique:      {path: Metals/Brushed_Antique_Copper.mdl, looks_like: "brushed old copper", color: [0.58, 0.36, 0.22]}
+clear_glass:         {path: Glass/Clear_Glass.mdl,           looks_like: "clear glass", color: [0.92, 0.94, 0.95]}
+frosted_glass:       {path: Glass/Frosted_Glass.mdl,         looks_like: "frosted glass", color: [0.88, 0.90, 0.91]}
+marble:              {path: Stone/Marble.mdl,                looks_like: "white veined marble", color: [0.90, 0.89, 0.87]}
+marble_smooth:       {path: Stone/Marble_Smooth.mdl,         looks_like: "smooth polished marble", color: [0.92, 0.91, 0.89]}
+granite_dark:        {path: Stone/Granite_Dark.mdl,          looks_like: "dark speckled granite", color: [0.25, 0.24, 0.24]}
+ceramic:             {path: Stone/Ceramic_Smooth_Fired.mdl,  looks_like: "glazed ceramic (mugs, plates)", color: [0.92, 0.91, 0.88]}
+porcelain:           {path: Stone/Porcelain_Smooth.mdl,      looks_like: "white porcelain", color: [0.95, 0.95, 0.94]}
+concrete_polished:   {path: Masonry/Concrete_Polished.mdl,   looks_like: "polished concrete", color: [0.62, 0.61, 0.59]}
+linen_white:         {path: Textiles/Linen_White.mdl,        looks_like: "white linen cloth", color: [0.92, 0.91, 0.88]}
+cardboard:           {path: Wall_Board/Cardboard.mdl,        looks_like: "brown corrugated cardboard", color: [0.66, 0.50, 0.33]}
+paper:               {path: Wall_Board/Paper.mdl,            looks_like: "plain paper", color: [0.94, 0.94, 0.92]}

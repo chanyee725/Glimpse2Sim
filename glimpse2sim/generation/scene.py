@@ -24,19 +24,20 @@ def load_scene_spec(path: Path) -> tuple[dict | None, list[dict]]:
     return split_spec(json.loads(path.read_text()))
 
 
-def write_placements(run_dir: Path) -> Path | None:
-    """Write run_dir/placements.json (offsets from the desk corner) from run_dir/scene.json."""
-    from .placement import placements
-
-    spec_path = run_dir / "scene.json"
-    if not spec_path.exists():
-        return None
-    result = placements(*load_scene_spec(spec_path))
-    if result is None:
-        return None
-    out = run_dir / "placements.json"
-    out.write_text(json.dumps(result, indent=2, ensure_ascii=False))
-    return out
+def place_on_floor(furniture: list[dict], desk: dict | None) -> list[dict]:
+    """Furniture comes with [x, y] only; set z so each item stands on the floor (desk top is z = 0)."""
+    floor = -float(desk.get("height_from_floor") or 0.75) if desk else 0.0
+    placed = []
+    for f in furniture:
+        d, shape = f.get("dimensions", {}), f.get("shape")
+        half = {"box": d.get("z", 0), "cylinder": d.get("height", 0), "capsule": d.get("height", 0)}.get(shape, 0) / 2
+        if shape == "sphere":
+            half = d.get("radius", 0)
+        if f.get("parts"):  # part offsets are measured from the floor
+            half = 0.0
+        x, y = f.get("position", [0.0, 0.0])[:2]
+        placed.append(f | {"position": [x, y, floor + float(half)]})
+    return placed
 
 
 def build_scene(path: Path) -> tuple[int, int]:
@@ -47,4 +48,6 @@ def build_scene(path: Path) -> tuple[int, int]:
 
     env, objects = load_scene_spec(path)
     spawn_environment(env)
+    furniture = place_on_floor((env or {}).get("furniture") or [], (env or {}).get("desk"))
+    spawn_objects(furniture, root="/World/Environment/Furniture", static=True)
     return spawn_objects(objects), len(objects)
