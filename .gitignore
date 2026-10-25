@@ -7,6 +7,8 @@ __pycache__/
 # Streamlit: config.toml is shared project settings; secrets stay local
 .streamlit/secrets.toml
 
+temp
+
 # Local research notes
 docs/
 
@@ -14,6 +16,10 @@ data/*
 !data/.gitkeep
 outputs/
 results/
+# Asset search index: rebuilt by `main.py assets-index`
+assets/index/
+# USD conversions of downloaded Objaverse models
+assets/cache/
 experiments/*
 !experiments/.gitkeep
 

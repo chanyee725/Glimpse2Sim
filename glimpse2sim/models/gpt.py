@@ -31,4 +31,6 @@ class GPTModel(VisionModel):
             store=False,  # do not keep captured images on the provider side
         )
         stop = resp.incomplete_details.reason if resp.incomplete_details else resp.status
-        return CallResult(resp.output_text, resp.usage.input_tokens, resp.usage.output_tokens, stop)
+        details = getattr(resp.usage, "output_tokens_details", None)
+        return CallResult(resp.output_text, resp.usage.input_tokens, resp.usage.output_tokens, stop,
+                          thinking_tokens=getattr(details, "reasoning_tokens", None))

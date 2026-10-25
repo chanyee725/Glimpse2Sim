@@ -27,6 +27,7 @@ class CallResult:
     output_tokens: int  # includes thinking/reasoning tokens
     stop_reason: str | None
     thinking: str = ""  # thinking summary, when the provider returns one
+    thinking_tokens: int | None = None  # part of output_tokens spent thinking; None if the provider does not say
 
 
 @dataclass
@@ -40,6 +41,7 @@ class ModelResponse:
     cost_usd: float
     latency_s: float
     stop_reason: str | None
+    thinking_tokens: int | None = None
 
 
 class VisionModel(ABC):
@@ -75,6 +77,7 @@ class VisionModel(ABC):
             cost_usd=self.cost(r.input_tokens, r.output_tokens),
             latency_s=time.perf_counter() - start,
             stop_reason=r.stop_reason,
+            thinking_tokens=r.thinking_tokens,
         )
 
     @abstractmethod

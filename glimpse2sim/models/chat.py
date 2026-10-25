@@ -42,4 +42,5 @@ class ChatCompletionsModel(VisionModel):
         return CallResult(
             msg.content or "", resp.usage.prompt_tokens, resp.usage.completion_tokens,
             resp.choices[0].finish_reason, thinking,
+            getattr(getattr(resp.usage, "completion_tokens_details", None), "reasoning_tokens", None),
         )

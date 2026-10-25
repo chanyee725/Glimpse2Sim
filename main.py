@@ -13,12 +13,25 @@ results/index.csv.
     uv run main.py generate scene01 --condition L1
     uv run main.py generate scene01 --model gemini-argon --condition L2 L3
     uv run main.py generate scene01 --model all --repeat 3
+    uv run main.py generate scene01 --model gemini-argon --thinking high   # -> results/gemini/argon-high/...
 
 Fuse: place all captured frames of a scene with the ChArUco board on the table, correct each frame's depth
 against the board, fuse them into one TSDF and ray cast it into the reference frame as one depth image
 (<scene>/fused). --icp also refines the board poses with colored ICP and a pose graph; --view shows the result
 in Rerun.
     uv run main.py fuse scene03 --icp --view
+
+Report: save a one-run PDF report (report.pdf in the run folder), rendered by headless Chrome.
+    uv run main.py report results/gemini/argon/L3/scene01/<time>
+    uv run main.py report results/gemini/*/L3/scene01/*      # several runs at once
+
+Summary: one PDF per model and scene comparing its latest L1, L2 and L3 runs
+(results/<model folder>/<scene>_summary.pdf).
+    uv run main.py summary scene01 gemini/argon
+    uv run main.py summary scene01                            # every model folder that has runs of scene01
+
+Assets index: list every object USD on the Isaac Sim asset server and embed it for asset search (once).
+    uv run main.py assets-index
 
 View: build the latest generated scene spec in Isaac Sim (extra args go to the Isaac Lab launcher).
     uv run main.py view scene01                  # latest run of any model and condition
@@ -41,7 +54,7 @@ from glimpse2sim.capture import D435Camera, detect_camera, find_scene, output_di
 from glimpse2sim.config import ROOT, load_config
 from glimpse2sim.fusion import fuse_scene
 from glimpse2sim.generation import build_scene, generate_scene, latest_scene_spec
-from glimpse2sim.models import model_names
+from glimpse2sim.models import THINKING_LEVELS, model_names
 
 PREVIEW_WIDTH = 640  # per panel; color and depth are shown side by side
 
@@ -97,7 +110,9 @@ def fuse(name: str, camera: str | None, reference: str, max_depth: float, voxel:
     fuse_scene(scene_dir, reference, max_depth, voxel, icp, frames, view)
 
 
-def generate(name: str, camera: str | None, model: str, conditions: list[str], repeat: int) -> None:
+def generate(
+    name: str, camera: str | None, model: str, conditions: list[str], repeat: int, thinking: str | None
+) -> None:
     load_dotenv(ROOT / ".env")
     if camera:
         scene_dir = output_dir(name, camera)
@@ -110,14 +125,14 @@ def generate(name: str, camera: str | None, model: str, conditions: list[str], r
         for m in models:
             for _ in range(repeat):
                 try:
-                    generate_scene(m, scene_dir, camera, condition)
+                    generate_scene(m, scene_dir, camera, condition, thinking)
                 except Exception as e:  # one failed call (e.g. a 503) must not stop the rest of the sweep
                     logging.error("%s %s failed: %s", condition, m, e)
 
 
 def view(
-    name: str, camera: str | None, model: str | None, condition: str | None, spec: Path | None, max_steps: int,
-    capture: bool, launcher_argv: list[str],
+    name: str, camera: str | None, model: str | None, thinking: str | None, condition: str | None,
+    spec: Path | None, max_steps: int, capture: bool, launcher_argv: list[str],
 ) -> None:
     # Isaac Lab is imported here so capture/generate never start Kit (or its EULA prompt).
     from isaaclab.app import add_launcher_args, launch_simulation
@@ -130,7 +145,7 @@ def view(
     else:
         camera, scene_dir = find_scene(name)
     if spec is None:
-        folder = load_config("models")["models"][model]["results"] if model else None
+        folder = load_config("models")["models"][model]["results"] + (f"-{thinking}" if thinking else "") if model else None
         spec = latest_scene_spec(name, condition, folder)
 
     launcher = argparse.ArgumentParser(prog="main.py view", conflict_handler="resolve")
@@ -179,6 +194,11 @@ def _photo_camera(sim, spec: Path, scene_dir: Path, frame: str = "front") -> Non
     except (KeyError, TypeError, ValueError):
         eye, target = [-0.9, 0.0, 0.7], [0.0, 0.0, 0.0]
         logging.info("no %s_color camera in the spec; using the default front view", frame)
+    if frame == "front" and not (eye[0] < 0 and abs(eye[1]) < abs(eye[0])):
+        # By the frame's definition the front camera sits on the -x side; anything else is the model's mistake,
+        # and rendering from there would hide whether the objects themselves are right.
+        logging.warning("front camera %s is not on the -x side; rendering from the default front view", eye)
+        eye, target = [-0.9, 0.0, 0.7], [0.0, 0.0, 0.0]
     sim.set_camera_view(eye=eye, target=target)
 
     meta = scene_dir / f"{frame}_meta.json"
@@ -239,6 +259,8 @@ def main() -> None:
     p.add_argument("--condition", nargs="+", choices=[*conditions, "all"], default=["all"],
                    help="input conditions to run (configs/conditions.yaml)")
     p.add_argument("--repeat", type=int, default=1, help="calls per model and condition")
+    p.add_argument("--thinking", choices=THINKING_LEVELS,
+                   help="override the thinking depth in configs/models.yaml; runs go to <model folder>-<level>")
 
     p = sub.add_parser("fuse", help="fuse all frames of a scene into one depth image in the reference view")
     p.add_argument("name", help="captured scene folder under outputs/<camera>")
@@ -250,10 +272,20 @@ def main() -> None:
     p.add_argument("--frame", nargs="+", help="only fuse these frames, e.g. --frame 000 001 002 (default: all)")
     p.add_argument("--view", action="store_true", help="show the fused mesh, cameras and depth in Rerun")
 
+    p = sub.add_parser("report", help="save a PDF report of one or more runs")
+    p.add_argument("runs", nargs="+", type=Path, help="run folders under results/")
+
+    p = sub.add_parser("summary", help="save a PDF comparing a model's levels on one scene")
+    p.add_argument("scene", help="scene name, e.g. scene01")
+    p.add_argument("models", nargs="*", help="model folders under results/, e.g. gemini/argon (default: all)")
+
+    sub.add_parser("assets-index", help="build the asset search index (assets/index/)")
+
     p = sub.add_parser("view", help="show a generated scene spec in Isaac Sim")
     p.add_argument("name", help="captured scene folder under outputs/<camera>")
     p.add_argument("--camera", choices=cameras, help="only needed if the name exists for several cameras")
     p.add_argument("--model", choices=model_names(), help="take the latest run of this model")
+    p.add_argument("--thinking", choices=THINKING_LEVELS, help="with --model: runs made with this --thinking override")
     p.add_argument("--condition", choices=conditions, help="take the latest run of this condition")
     p.add_argument("--spec", type=Path, help="scene.json to load (default: the latest run)")
     p.add_argument("--max-steps", type=int, default=-1, help="stop after this many steps; -1 runs until closed")
@@ -261,15 +293,34 @@ def main() -> None:
 
     args, extra = parser.parse_known_args()
     if args.command == "view":
-        view(str(args.name), args.camera, args.model, args.condition, args.spec, args.max_steps, args.capture, extra)
+        view(str(args.name), args.camera, args.model, args.thinking, args.condition, args.spec, args.max_steps,
+             args.capture, extra)
     elif extra:
         parser.error(f"unrecognized arguments: {' '.join(extra)}")
     elif args.command == "fuse":
         fuse(str(args.name), args.camera, args.ref, args.max_depth, args.voxel, args.icp, args.frame, args.view)
+    elif args.command == "assets-index":
+        from glimpse2sim.assets import build_index
+
+        load_dotenv(ROOT / ".env")
+        print(f"indexed {build_index()} assets")
+    elif args.command == "summary":
+        from glimpse2sim.generation.scene import RESULTS_DIR
+        from glimpse2sim.report import write_summary_pdf
+
+        folders = args.models or sorted({str(p.relative_to(RESULTS_DIR).parents[-3])
+                                         for p in RESULTS_DIR.glob(f"*/*/*/{args.scene}/*/scene.json")})
+        for folder in folders:
+            print(write_summary_pdf(RESULTS_DIR / folder, args.scene))
+    elif args.command == "report":
+        from glimpse2sim.report import write_pdf
+
+        for run in args.runs:
+            print(write_pdf(run))
     elif args.command == "capture":
         capture(str(args.name), args.camera)
     else:
-        generate(str(args.name), args.camera, args.model, args.condition, args.repeat)
+        generate(str(args.name), args.camera, args.model, args.condition, args.repeat, args.thinking)
 
 
 if __name__ == "__main__":

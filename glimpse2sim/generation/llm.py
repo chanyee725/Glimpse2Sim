@@ -16,14 +16,16 @@ from pathlib import Path
 
 
 from ..config import CONFIG_DIR, ROOT, load_config
-from ..models import Image, build_model
+from ..models import Image, build_model, thinking_setting
+from ..assets import resolve_assets
 from .boxes import draw_boxes
 from .scene import RESULTS_DIR, run_dir
 from .translate import translate_thinking
 
 INDEX_FIELDS = [
-    "time", "camera", "scene", "condition", "model", "model_id", "n_images", "input_tokens", "output_tokens",
-    "cost_usd", "latency_s", "stop_reason", "valid_json", "num_objects", "prompt_sha", "run_dir",
+    "time", "camera", "scene", "condition", "model", "model_id", "thinking", "n_images", "input_tokens",
+    "output_tokens", "thinking_tokens", "cost_usd", "latency_s", "stop_reason", "valid_json", "num_objects",
+    "prompt_sha", "run_dir",
 ]
 
 PROMPT_DIR = CONFIG_DIR / "prompts"
@@ -61,8 +63,11 @@ def load_prompts(camera: str) -> tuple[str, str]:
         .replace("{depth_near_m}", str(near))
         .replace("{depth_far_m}", str(far))
     )
-    textures = "\n".join(f"  - `{name}`: {t['looks_like']}" for name, t in load_config("textures").items())
-    return system, (PROMPT_DIR / "scene_generation.md").read_text().replace("{texture_list}", textures)
+    listing = lambda catalog: "\n".join(f"  - `{name}`: {t['looks_like']}" for name, t in load_config(catalog).items())  # noqa: E731
+    return system, (
+        (PROMPT_DIR / "scene_generation.md").read_text()
+        .replace("{texture_list}", listing("textures"))
+    )
 
 
 def condition_inputs(scene_dir: Path, condition: str) -> tuple[list[Path], str]:
@@ -77,12 +82,19 @@ def condition_inputs(scene_dir: Path, condition: str) -> tuple[list[Path], str]:
 
 def _append_index(row: dict) -> None:
     index = RESULTS_DIR / "index.csv"
-    new = not index.exists()
-    with open(index, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=INDEX_FIELDS)
-        if new:
+    rows = []
+    if index.exists():
+        with open(index, newline="") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames != INDEX_FIELDS:  # columns were added since: rewrite the old rows under the new header
+                rows = list(reader)
+    if rows or not index.exists():
+        with open(index, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=INDEX_FIELDS)
             w.writeheader()
-        w.writerow({k: row.get(k) for k in INDEX_FIELDS})
+            w.writerows({k: r.get(k) for k in INDEX_FIELDS} for r in rows)
+    with open(index, "a", newline="") as f:
+        csv.DictWriter(f, fieldnames=INDEX_FIELDS).writerow({k: row.get(k) for k in INDEX_FIELDS})
 
 
 def parse_json(text: str) -> dict | None:
@@ -94,8 +106,11 @@ def parse_json(text: str) -> dict | None:
         return None
 
 
-def generate_scene(model_name: str, scene_dir: Path, camera: str, condition: str) -> Path:
+def generate_scene(model_name: str, scene_dir: Path, camera: str, condition: str, thinking: str | None = None) -> Path:
     """Run one model on one captured scene under one input condition (configs/conditions.yaml).
+
+    `thinking` (low, medium, high) overrides the model's thinking depth; such runs go to a separate model folder
+    with the level appended (e.g. gemini/argon-high), so they never mix with runs at the configured depth.
 
     Writes to results/<model folder>/<condition>/<scene>/<time>/ (the folder is `results` in configs/models.yaml,
     e.g. gemini/flash) and appends a row to results/index.csv:
@@ -113,10 +128,11 @@ def generate_scene(model_name: str, scene_dir: Path, camera: str, condition: str
     system, prompt = load_prompts(camera)
     prompt += extra
     prompt_sha = hashlib.sha256((system + "\0" + prompt).encode()).hexdigest()[:12]
-    model = build_model(model_name)
+    model = build_model(model_name, thinking)
 
     started = datetime.now()
-    out = run_dir(load_config("models")["models"][model_name]["results"], condition, scene_dir.name, started)
+    folder = load_config("models")["models"][model_name]["results"] + (f"-{thinking}" if thinking else "")
+    out = run_dir(folder, condition, scene_dir.name, started)
     out.mkdir(parents=True)
     (out / "prompt.md").write_text(f"# System\n\n{system}\n\n# User\n\n{prompt}\n")
     log.info("%s (%s): %d images -> %s", model_name, model.model_id, len(images), _rel(out))
@@ -141,20 +157,28 @@ def generate_scene(model_name: str, scene_dir: Path, camera: str, condition: str
     if scene is not None:
         (out / "scene.json").write_text(json.dumps(scene, indent=2, ensure_ascii=False))
         draw_boxes(scene, image_paths, out)
+        try:  # find a library model for each asset_query; a failed search only leaves the shapes in place
+            found = resolve_assets(scene)
+            log.info("asset search: %d of %d objects matched", found, len(scene.get("objects", [])))
+        except Exception as e:
+            log.warning("asset search failed: %s", e)
+        (out / "scene.json").write_text(json.dumps(scene, indent=2, ensure_ascii=False))
     else:
         log.warning("output is not valid JSON; see response.txt")
 
-    record = asdict(resp) | {
+    record = asdict(resp)
+    record.pop("text")  # stored in response.txt
+    record.pop("thinking")  # the thinking text, stored in thinking.log; "thinking" below is the depth setting
+    record |= {
         "camera": camera,
         "scene": scene_dir.name,
         "condition": condition,
+        "thinking": thinking or thinking_setting(model_name),
         "prompt_sha": prompt_sha,
         "images": [_rel(p) for p in image_paths],
         "valid_json": scene is not None,
         "num_objects": len(scene.get("objects", [])) if scene else None,
     }
-    record.pop("text")  # stored in response.txt
-    record.pop("thinking")  # stored in thinking.log
     (out / "run.json").write_text(json.dumps(record, indent=2, ensure_ascii=False))
     _append_index(record | {
         "time": f"{started:%Y-%m-%d %H:%M:%S}", "n_images": len(image_paths),
@@ -162,8 +186,8 @@ def generate_scene(model_name: str, scene_dir: Path, camera: str, condition: str
     })
 
     log.info(
-        "%s: in=%d out=%d $%.4f %.1fs stop=%s objects=%s",
-        model_name, resp.input_tokens, resp.output_tokens, resp.cost_usd,
+        "%s: in=%d out=%d (thinking %s) $%.4f %.1fs stop=%s objects=%s",
+        model_name, resp.input_tokens, resp.output_tokens, resp.thinking_tokens, resp.cost_usd,
         resp.latency_s, resp.stop_reason, record["num_objects"],
     )
     translate_thinking(out)

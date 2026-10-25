@@ -1,5 +1,6 @@
 [server]
-# The file watcher would also watch .venv and hit the inotify limit; restart the app after editing app.py.
+# Watching would cover the whole project (.venv included) and hit the inotify limit, even with a blacklist.
+# app.py reloads the glimpse2sim modules on every rerun instead, so edits show up after any click.
 fileWatcherType = "none"
 
 [browser]

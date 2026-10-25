@@ -1,6 +1,6 @@
 Rebuild the real scene in the images as an Isaac Sim scene specification.
 
-Goal: a render of the rebuilt scene from the same camera should show the objects on the desk as they look in the photo. Put the effort into the objects: every one of them with the right shape, size, position, orientation, color, and surface finish. The desk is rebuilt simply, as the surface they rest on; nothing else in the room is rebuilt. The same rules apply to any scene: count, measure, and place what is actually in these images.
+Goal: a render of the rebuilt scene from the same camera should show the objects on the desk as they look in the photo. Put the effort into the objects: every one of them with the right shape, size, position, orientation, color, and surface finish. Above all, keep every object exactly where it is in the photos. The desk is rebuilt simply, as the surface they rest on; nothing else in the room is rebuilt. The same rules apply to any scene: count, measure, and place what is actually in these images.
 
 How to work:
 1. List every object on the desk. Look in every image, including small, thin, dark, transparent, and partly hidden items, and items at the image edges. Count repeated items one by one.
@@ -10,6 +10,13 @@ How to work:
 5. Check the result against every image: positions, overlaps, what rests on what, and the 2D boxes.
 
 Coordinate frame: as defined in the system prompt. The desk top is z = 0.
+
+Positions:
+- Place each object where it actually is, not where it would look neat. Do not center the group, spread objects apart, line them up, round coordinates to tidy values, or move an object to avoid a near-overlap that the photo shows.
+- Measure each object's position against fixed references: its distance from the desk edges and from the desk center, and its distance and direction to its nearest neighbors.
+- Keep the arrangement: the gaps between objects, which object is nearer the front camera, and which is further left must match the photos.
+- Use the depth images, when given, for how far each object is from the camera, and the top view, when given, for the layout on the desk.
+- Before answering, picture the rebuilt scene from the front camera and compare it with front_color: every object should land where its 2D box is.
 
 Environment:
 - `environment.desk`: the surface the objects rest on, with its outline (`top_shape`), size, top thickness, height from the floor, and simple vertical legs. `null` when the objects lie on the floor (the ground is then z = 0).
@@ -31,6 +38,11 @@ Parts:
 - Each part has its own shape, dimensions, offset from the item's origin, rotation (`rpy_deg`), and appearance.
 - With parts, the item's `position` is the center of its footprint on the surface it rests on (z = that surface), and part offsets are measured from there in the item's own frame (x along `yaw_deg` 0, z up).
 
+Ready-made models:
+- For every object, write `asset_query`: a short English search phrase for a 3D model library that names the kind of object, ending with its noun, plus the details that set its look ("black wireless computer mouse", "white ceramic coffee mug", "red felt-tip pen with cap").
+- The library is searched for a model of that same kind; one is used only if found, and the object is otherwise shown with your shapes. So name the object as it is, not as something similar.
+- Still give the object's `shape`, `dimensions`, and `size_mm` as usual: a found model is scaled to them, and the shapes remain the object's collision body.
+
 Appearance:
 - Give `color_rgb`, `roughness`, and `metallic` for every surface (item or part). The photos are white-balanced and the simulator light is neutral white, so give colors as they appear in the photos.
 - When a surface has a visible texture (wood grain, stone, metal finish, cardboard), also set `texture` to the closest name from this list, else `null`:
@@ -43,6 +55,10 @@ Physical properties:
 Constraints:
 - Every object rests on the desk, the ground, or another object, with no overlaps between items.
 - For a single-shape object, `position` is the center of the shape.
+
+Focus object:
+- The photos were taken around one object on the desk: the one the person was photographing. Decide which object it is and give its `id` in `focus_object.id`, with a short reason (where it sits in the frames, what every view keeps in sight).
+- Still rebuild every object in the scene; the focus object is only named, not treated differently.
 
 Spatial relations:
 - Choose one object as the anchor and set `relations.anchor` to its `id`. Pick the object you can locate most reliably.
@@ -93,6 +109,7 @@ Return JSON with this structure:
       "shape": "box",
       "dimensions": {"x": 0.0, "y": 0.0, "z": 0.0},
       "parts": null,
+      "asset_query": "",
       "size_mm": {"length": 0, "width": 0, "height": 0},
       "position": [0.0, 0.0, 0.0],
       "yaw_deg": 0.0,
@@ -125,6 +142,7 @@ Return JSON with this structure:
       "...": "every other object field, as above"
     }
   ],
+  "focus_object": {"id": "red_cube_1", "reason": ""},
   "relations": {
     "anchor": "red_cube_1",
     "items": [
@@ -147,6 +165,7 @@ Field definitions:
 - `boxes_2d`: the item's 2D bounding box in each color image where it is visible, keyed by the image name from the image list (for example `front_color`). Each box is [ymin, xmin, ymax, xmax], normalized to 0-1000 over the image height and width. Leave out images where it is not visible; depth images get no boxes.
 - `color_rgb`: 0 to 1 per channel, the dominant color of the surface as it appears in the photo (sRGB). For an item with parts, the item-level color is its overall dominant color.
 - `roughness`, `metallic`: how the surface looks, 0 to 1. Roughness 0 is mirror-glossy (glass, polished phone back), 1 is fully matte (paper, rubber). Metallic is 1 for bare metal, 0 for everything else (plastic, painted, wood).
+- `asset_query`: the search phrase described in Ready-made models. It changes only how the object looks.
 - `texture`: a name from the texture list in Appearance, or `null` for a plain surface (most plastics and painted surfaces). A texture brings its own fixed colors and replaces `color_rgb`, so pick one only when its color also matches (white plastic stays `null`).
 - `is_static`: true for objects that should not move (heavy items, fixtures).
 - `confidence`: 0 to 1, for the item's identity, position, and size together.
@@ -154,6 +173,7 @@ Field definitions:
 - `desk.legs`: one vertical post per place where the desk stands on the floor, as parts in the desk frame (origin at the center of the desk top; the floor is at z = -height_from_floor), each a cylinder or box from the floor to the underside of the top with `rpy_deg` [0, 0, 0]. Approximate a folding frame or panel legs by these posts. `leg_appearance` is their color and finish.
 - `lighting.ambient`: 0 to 1, how bright the soft, shadowless light filling the room is.
 - `lighting.key_light`: the main light that casts the visible shadows: `azimuth_deg` is the direction it comes from, measured from +x toward +y; `elevation_deg` is its height above the horizon (90 is straight above); `strength` 0 to 1 is how strong and sharp the shadows are (0 for no visible shadows).
-- `environment.cameras`: for each color image, the camera's `position` and the point it looks at (`look_at`), in meters in the scene frame.
+- `environment.cameras`: for each color image, the camera's `position` and the point it looks at (`look_at`), in meters in the scene frame. The front camera defines the frame, so it is always on the -x side of the desk looking toward +x: its x is negative and its y is close to 0.
+- `focus_object`: `id` is one object `id` from `objects`; `reason` is one short sentence.
 - `relations.items`: `a` and `b` are object `id`s, or `desk` for the desk (or `ground` when there is no desk). Entries other than `on_top_of` have the anchor as `b`.
 - `physics_rationale`: one short sentence per property, e.g. "an empty 350 ml aluminum can typically weighs about 0.015 kg".

@@ -54,4 +54,5 @@ class GeminiModel(VisionModel):
             output_tokens=n_out,
             stop_reason=finish.name if finish else None,
             thinking="".join(thinking),
+            thinking_tokens=(usage.thoughts_token_count or 0) if usage else None,
         )
