@@ -1,0 +1,13 @@
+[server]
+# The file watcher would also watch .venv and hit the inotify limit; restart the app after editing app.py.
+fileWatcherType = "none"
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"
+primaryColor = "#78A9E4"
+backgroundColor = "#1B2025"
+secondaryBackgroundColor = "#232A30"
+textColor = "#E4E9EC"

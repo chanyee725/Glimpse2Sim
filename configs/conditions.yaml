@@ -1,0 +1,6 @@
+# Input conditions: what a model is shown of a captured scene.
+#   frames: color frames sent, in this order; `all` = front first, then every other frame by name
+#   depth:  also send each frame's colorized depth image
+L1: {frames: [front], depth: true}    # front RGB + its depth
+L2: {frames: all,     depth: false}   # every RGB view
+L3: {frames: all,     depth: true}    # every RGB view + depth

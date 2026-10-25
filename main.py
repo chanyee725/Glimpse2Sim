@@ -5,11 +5,14 @@ The connected camera is detected automatically.
     uv run main.py capture scene01
     Left click: save the current frame (000, 001, ...). q / Esc / closing the window: quit.
 
-Generate: send a captured scene to a model and build the scene spec, logging the model's thinking.
-The camera is looked up from the scene folder.
-    uv run main.py generate scene01
-    uv run main.py generate scene01 --model all
-    uv run main.py generate scene01 --frame front --no-depth
+Generate: send a captured scene to a model under input conditions (configs/conditions.yaml: L1 front RGB + depth,
+L2 every RGB view, L3 every RGB view + depth) and save each run to
+results/<model folder>/<condition>/<scene>/<time>/ (e.g. results/gemini/flash/L1/scene01/...), listed in
+results/index.csv.
+    uv run main.py generate scene01                          # L1, L2 and L3 with gemini-flash
+    uv run main.py generate scene01 --condition L1
+    uv run main.py generate scene01 --model gemini-argon --condition L2 L3
+    uv run main.py generate scene01 --model all --repeat 3
 
 Fuse: place all captured frames of a scene with the ChArUco board on the table, correct each frame's depth
 against the board, fuse them into one TSDF and ray cast it into the reference frame as one depth image
@@ -18,10 +21,11 @@ in Rerun.
     uv run main.py fuse scene03 --icp --view
 
 View: build the latest generated scene spec in Isaac Sim (extra args go to the Isaac Lab launcher).
-    uv run main.py view scene01
-    uv run main.py view scene01 --spec outputs/d435/scene01/generations/<run>/scene.json
+    uv run main.py view scene01                  # latest run of any model and condition
+    uv run main.py view scene01 --model gemini-flash --condition L1
+    uv run main.py view scene01 --spec results/gemini/flash/L3/scene01/<time>/scene.json
     uv run main.py view scene01 --headless --max-steps 200
-    uv run main.py view scene01 --capture       # save sim_capture.png next to the scene.json and exit
+    uv run main.py view scene01 --capture        # save sim_capture.png and compare.png in the run folder, exit
 """
 
 import argparse
@@ -93,18 +97,27 @@ def fuse(name: str, camera: str | None, reference: str, max_depth: float, voxel:
     fuse_scene(scene_dir, reference, max_depth, voxel, icp, frames, view)
 
 
-def generate(name: str, camera: str | None, model: str, with_depth: bool, frames: list[str] | None) -> None:
+def generate(name: str, camera: str | None, model: str, conditions: list[str], repeat: int) -> None:
     load_dotenv(ROOT / ".env")
     if camera:
         scene_dir = output_dir(name, camera)
     else:
         camera, scene_dir = find_scene(name)
-    for m in model_names(include_debug=False) if model == "all" else [model]:
-        generate_scene(m, scene_dir, camera, with_depth, frames)
+    if "all" in conditions:
+        conditions = list(load_config("conditions"))
+    models = model_names(include_debug=False) if model == "all" else [model]
+    for condition in conditions:
+        for m in models:
+            for _ in range(repeat):
+                try:
+                    generate_scene(m, scene_dir, camera, condition)
+                except Exception as e:  # one failed call (e.g. a 503) must not stop the rest of the sweep
+                    logging.error("%s %s failed: %s", condition, m, e)
 
 
 def view(
-    name: str, camera: str | None, spec: Path | None, max_steps: int, capture: bool, launcher_argv: list[str]
+    name: str, camera: str | None, model: str | None, condition: str | None, spec: Path | None, max_steps: int,
+    capture: bool, launcher_argv: list[str],
 ) -> None:
     # Isaac Lab is imported here so capture/generate never start Kit (or its EULA prompt).
     from isaaclab.app import add_launcher_args, launch_simulation
@@ -112,9 +125,13 @@ def view(
 
     import isaaclab.sim as sim_utils
 
-    scene_dir = output_dir(name, camera) if camera else find_scene(name)[1]
+    if camera:
+        scene_dir = output_dir(name, camera)
+    else:
+        camera, scene_dir = find_scene(name)
     if spec is None:
-        spec = latest_scene_spec(scene_dir)
+        folder = load_config("models")["models"][model]["results"] if model else None
+        spec = latest_scene_spec(name, condition, folder)
 
     launcher = argparse.ArgumentParser(prog="main.py view", conflict_handler="resolve")
     launcher.add_argument(
@@ -206,6 +223,7 @@ def _side_by_side(photo: Path, render: Path, out: Path) -> None:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
     cameras = list(load_config("cameras"))
+    conditions = list(load_config("conditions"))
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -218,8 +236,9 @@ def main() -> None:
     p.add_argument("name", help="captured scene folder under outputs/<camera>")
     p.add_argument("--camera", choices=cameras, help="only needed if the name exists for several cameras")
     p.add_argument("--model", choices=[*model_names(), "all"], default="gemini-flash")
-    p.add_argument("--no-depth", action="store_true", help="send RGB only")
-    p.add_argument("--frame", nargs="+", help="only send these frames, in this order, e.g. --frame front top (default: all)")
+    p.add_argument("--condition", nargs="+", choices=[*conditions, "all"], default=["all"],
+                   help="input conditions to run (configs/conditions.yaml)")
+    p.add_argument("--repeat", type=int, default=1, help="calls per model and condition")
 
     p = sub.add_parser("fuse", help="fuse all frames of a scene into one depth image in the reference view")
     p.add_argument("name", help="captured scene folder under outputs/<camera>")
@@ -234,13 +253,15 @@ def main() -> None:
     p = sub.add_parser("view", help="show a generated scene spec in Isaac Sim")
     p.add_argument("name", help="captured scene folder under outputs/<camera>")
     p.add_argument("--camera", choices=cameras, help="only needed if the name exists for several cameras")
-    p.add_argument("--spec", type=Path, help="scene.json to load (default: the latest generation)")
+    p.add_argument("--model", choices=model_names(), help="take the latest run of this model")
+    p.add_argument("--condition", choices=conditions, help="take the latest run of this condition")
+    p.add_argument("--spec", type=Path, help="scene.json to load (default: the latest run)")
     p.add_argument("--max-steps", type=int, default=-1, help="stop after this many steps; -1 runs until closed")
     p.add_argument("--capture", action="store_true", help="save the spawned scene as sim_capture.png and exit")
 
     args, extra = parser.parse_known_args()
     if args.command == "view":
-        view(str(args.name), args.camera, args.spec, args.max_steps, args.capture, extra)
+        view(str(args.name), args.camera, args.model, args.condition, args.spec, args.max_steps, args.capture, extra)
     elif extra:
         parser.error(f"unrecognized arguments: {' '.join(extra)}")
     elif args.command == "fuse":
@@ -248,7 +269,7 @@ def main() -> None:
     elif args.command == "capture":
         capture(str(args.name), args.camera)
     else:
-        generate(str(args.name), args.camera, args.model, not args.no_depth, args.frame)
+        generate(str(args.name), args.camera, args.model, args.condition, args.repeat)
 
 
 if __name__ == "__main__":

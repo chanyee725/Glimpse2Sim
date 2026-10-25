@@ -1,8 +1,10 @@
 # Verify model IDs and prices against each provider's pricing page before a run.
 # Prices are USD per 1M tokens. Thinking/reasoning tokens are billed as output.
+# results: where this model's runs go, as results/<results>/<condition>/<scene>/<time>/.
 models:
   claude:
     provider: anthropic
+    results: claude/fable
     model_id: claude-fable-5-1
     max_output_tokens: 64000
     effort: high
@@ -10,6 +12,7 @@ models:
 
   gpt:
     provider: openai
+    results: gpt/astra
     model_id: gpt-6-astra          # TODO: confirm exact ID in the OpenAI dashboard
     max_output_tokens: 64000
     reasoning_effort: high
@@ -17,12 +20,14 @@ models:
 
   gemini-argon:
     provider: google
+    results: gemini/argon
     model_id: gemini-4-argon
     max_output_tokens: 64000
     pricing: {input: 2.00, output: 10.00}   # intro price until 2026-11-30, then 4.00 / 20.00
 
   gemini-er:
     provider: google
+    results: gemini/er
     model_id: gemini-robotics-er-2-preview
     max_output_tokens: 64000
     pricing: {input: 2.00, output: 10.00}   # some sources report a temporary 1.00 / 5.00
@@ -30,6 +35,7 @@ models:
   # Low-cost reference point, not one of the main compared models.
   glm:
     provider: zai
+    results: glm/flashx
     model_id: glm-4.6v-flashx              # TODO: confirm the exact ID; docs.z.ai only shows "glm-4.6v"
     base_url: https://api.z.ai/api/paas/v4/
     api_key_env: ZAI_API_KEY
@@ -41,6 +47,7 @@ models:
   # Free-tier inputs may be used by Google to improve its products.
   gemini-flash:
     provider: google
+    results: gemini/flash
     model_id: gemini-3.8-flash
     debug: true                          # excluded from --model all
     max_output_tokens: 64000

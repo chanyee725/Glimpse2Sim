@@ -1,14 +1,26 @@
 """Load a generated scene spec and build it in Isaac Sim."""
 
 import json
+from datetime import datetime
 from pathlib import Path
 
+from ..config import ROOT
 
-def latest_scene_spec(scene_dir: Path) -> Path:
-    """Most recent generations/*/scene.json under a captured scene folder."""
-    specs = sorted(scene_dir.glob("generations/*/scene.json"), key=lambda p: p.stat().st_mtime)
+
+RESULTS_DIR = ROOT / "results"
+
+
+def run_dir(model_folder: str, condition: str, scene: str, started: datetime) -> Path:
+    """results/<model folder>/<condition>/<scene>/<time>, e.g. results/gemini/flash/L1/scene01/20261025_134746."""
+    return RESULTS_DIR / model_folder / condition / scene / f"{started:%Y%m%d_%H%M%S}"
+
+
+def latest_scene_spec(scene: str, condition: str | None = None, model_folder: str | None = None) -> Path:
+    """Most recent scene.json of a scene, optionally only of one condition and one model."""
+    pattern = f"{model_folder or '*/*'}/{condition or '*'}/{scene}/*/scene.json"
+    specs = sorted(RESULTS_DIR.glob(pattern), key=lambda p: p.stat().st_mtime)
     if not specs:
-        raise FileNotFoundError(f"no generations/*/scene.json under {scene_dir}")
+        raise FileNotFoundError(f"no results/{pattern}")
     return specs[-1]
 
 
