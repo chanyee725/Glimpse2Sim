@@ -3,6 +3,9 @@ __pycache__/
 .venv/
 .env
 *.egg-info/
+.ruff_cache/
+# Streamlit: config.toml is shared project settings; secrets stay local
+.streamlit/secrets.toml
 
 # Local research notes
 docs/
