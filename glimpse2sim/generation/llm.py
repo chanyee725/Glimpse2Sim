@@ -1,6 +1,7 @@
 """Scene generation: captured images + prompts -> model -> scene spec JSON, with the model's thinking logged.
 
-Every run is saved under results/<model folder>/<condition>/<scene>/<time>/ and listed in results/index.csv.
+Every run is saved under results/<scene>/<experiment>/<model folder>/<condition>/<time>/ and listed in
+results/<scene>/<experiment>/index.csv; the experiment round is `current` in configs/experiment.yaml.
 """
 
 import csv
@@ -17,15 +18,15 @@ from pathlib import Path
 
 from ..config import CONFIG_DIR, ROOT, load_config
 from ..models import Image, build_model, thinking_setting
-from ..assets import resolve_assets
+from .asset_selection import select_assets
 from .boxes import draw_boxes
-from .scene import RESULTS_DIR, run_dir
+from .scene import current_experiment, experiment_dir, run_dir
 from .translate import translate_thinking
 
 INDEX_FIELDS = [
     "time", "camera", "scene", "condition", "model", "model_id", "thinking", "n_images", "input_tokens",
     "output_tokens", "thinking_tokens", "cost_usd", "latency_s", "stop_reason", "valid_json", "num_objects",
-    "prompt_sha", "run_dir",
+    "prompt_sha", "asset_input_tokens", "asset_output_tokens", "asset_cost_usd", "assets_found", "run_dir",
 ]
 
 PROMPT_DIR = CONFIG_DIR / "prompts"
@@ -80,8 +81,8 @@ def condition_inputs(scene_dir: Path, condition: str) -> tuple[list[Path], str]:
     )
 
 
-def _append_index(row: dict) -> None:
-    index = RESULTS_DIR / "index.csv"
+def _append_index(scene: str, row: dict) -> None:
+    index = experiment_dir(scene) / "index.csv"
     rows = []
     if index.exists():
         with open(index, newline="") as f:
@@ -112,13 +113,14 @@ def generate_scene(model_name: str, scene_dir: Path, camera: str, condition: str
     `thinking` (low, medium, high) overrides the model's thinking depth; such runs go to a separate model folder
     with the level appended (e.g. gemini/argon-high), so they never mix with runs at the configured depth.
 
-    Writes to results/<model folder>/<condition>/<scene>/<time>/ (the folder is `results` in configs/models.yaml,
-    e.g. gemini/flash) and appends a row to results/index.csv:
+    Writes to results/<scene>/<experiment>/<model folder>/<condition>/<time>/ (the folder is `results` in
+    configs/models.yaml, e.g. gemini/flash) and appends a row to results/<scene>/<experiment>/index.csv:
 
     thinking.log  model's thinking, streamed as it arrives
     thinking_ko.md  Korean translation of thinking.log, for reading only
     scene.json    parsed scene spec (missing if the output was not valid JSON)
     *_boxes.png   sent color images with the model's 2D boxes and object ids drawn on
+    asset_*       the same model choosing each object's library model (see asset_selection.py)
     response.txt  raw model output
     run.json      model ID, tokens, cost, latency, inputs, condition, prompt hash
     prompt.md     the exact system and user prompts sent
@@ -132,7 +134,7 @@ def generate_scene(model_name: str, scene_dir: Path, camera: str, condition: str
 
     started = datetime.now()
     folder = load_config("models")["models"][model_name]["results"] + (f"-{thinking}" if thinking else "")
-    out = run_dir(folder, condition, scene_dir.name, started)
+    out = run_dir(scene_dir.name, folder, condition, started)
     out.mkdir(parents=True)
     (out / "prompt.md").write_text(f"# System\n\n{system}\n\n# User\n\n{prompt}\n")
     log.info("%s (%s): %d images -> %s", model_name, model.model_id, len(images), _rel(out))
@@ -154,14 +156,14 @@ def generate_scene(model_name: str, scene_dir: Path, camera: str, condition: str
 
     (out / "response.txt").write_text(resp.text)
     scene = parse_json(resp.text)
+    assets = None
     if scene is not None:
         (out / "scene.json").write_text(json.dumps(scene, indent=2, ensure_ascii=False))
         draw_boxes(scene, image_paths, out)
-        try:  # find a library model for each asset_query; a failed search only leaves the shapes in place
-            found = resolve_assets(scene)
-            log.info("asset search: %d of %d objects matched", found, len(scene.get("objects", [])))
+        try:  # the same model picks a library model for each object; a failure only leaves the shapes in place
+            assets = select_assets(scene, model, system, out, parse_json)
         except Exception as e:
-            log.warning("asset search failed: %s", e)
+            log.warning("asset selection failed: %s", e)
         (out / "scene.json").write_text(json.dumps(scene, indent=2, ensure_ascii=False))
     else:
         log.warning("output is not valid JSON; see response.txt")
@@ -170,6 +172,7 @@ def generate_scene(model_name: str, scene_dir: Path, camera: str, condition: str
     record.pop("text")  # stored in response.txt
     record.pop("thinking")  # the thinking text, stored in thinking.log; "thinking" below is the depth setting
     record |= {
+        "experiment": current_experiment(),
         "camera": camera,
         "scene": scene_dir.name,
         "condition": condition,
@@ -178,12 +181,14 @@ def generate_scene(model_name: str, scene_dir: Path, camera: str, condition: str
         "images": [_rel(p) for p in image_paths],
         "valid_json": scene is not None,
         "num_objects": len(scene.get("objects", [])) if scene else None,
+        "asset_selection": assets,  # the second call; its cost is not in cost_usd above
     }
     (out / "run.json").write_text(json.dumps(record, indent=2, ensure_ascii=False))
-    _append_index(record | {
+    _append_index(scene_dir.name, record | {
         "time": f"{started:%Y-%m-%d %H:%M:%S}", "n_images": len(image_paths),
         "cost_usd": round(resp.cost_usd, 5), "latency_s": round(resp.latency_s, 1), "run_dir": _rel(out),
-    })
+    } | ({"asset_input_tokens": assets["input_tokens"], "asset_output_tokens": assets["output_tokens"],
+          "asset_cost_usd": round(assets["cost_usd"], 5), "assets_found": assets["assets_found"]} if assets else {}))
 
     log.info(
         "%s: in=%d out=%d (thinking %s) $%.4f %.1fs stop=%s objects=%s",

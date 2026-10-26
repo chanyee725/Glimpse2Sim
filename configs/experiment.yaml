@@ -1,0 +1,8 @@
+# Experiment rounds: new runs go to results/<current>/<model folder>/<condition>/<scene>/<time>/.
+# Raise `current` whenever the prompts or the pipeline change, so runs of different setups never mix in summaries
+# or "latest run" lookups, and note what changed.
+current: "02"
+
+notes:
+  "01": first sweep, assets matched by embedding similarity and word rules alone
+  "02": the scene model picks each object's asset from the embedding search's candidates

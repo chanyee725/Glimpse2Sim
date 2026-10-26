@@ -94,11 +94,11 @@ def _asset_cell(o: dict) -> str:
 
 
 def build_html(run_dir: Path) -> str:
-    """The report page for one run folder (results/<model folder>/<condition>/<scene>/<time>/)."""
+    """The report page for one run folder (results/<scene>/<experiment>/<model folder>/<condition>/<time>/)."""
     run_dir = run_dir.resolve()
     run = json.loads((run_dir / "run.json").read_text())
     spec = json.loads((run_dir / "scene.json").read_text()) if (run_dir / "scene.json").exists() else None
-    model_folder = "/".join(run_dir.parts[-5:-3])
+    model_folder = "/".join(run_dir.parts[-4:-2])
     started = datetime.strptime(run_dir.name, "%Y%m%d_%H%M%S")
 
     facts = [
@@ -207,11 +207,12 @@ def write_pdf(run_dir: Path) -> Path:
 MATCH_RADIUS_M = 0.10  # objects of two levels within this xy distance are taken to be the same object
 
 
-def latest_runs(model_dir: Path, scene: str) -> dict[str, Path]:
-    """Level -> the latest run folder of this model and scene that has a scene.json (L1, L2, L3 order)."""
+def latest_runs(model_dir: Path) -> dict[str, Path]:
+    """Level -> the latest run folder under results/<scene>/<experiment>/<model folder> that has a scene.json
+    (L1, L2, L3 order)."""
     runs = {}
     for level_dir in sorted(p for p in model_dir.iterdir() if p.is_dir()):
-        done = sorted(d for d in (level_dir / scene).glob("*/") if (d / "scene.json").exists())
+        done = sorted(d for d in level_dir.glob("*/") if (d / "scene.json").exists())
         if done:
             runs[level_dir.name] = done[-1]
     return runs
@@ -244,18 +245,20 @@ def _match_objects(specs: dict[str, dict]) -> list[dict[str, dict | None]]:
     return rows
 
 
-def build_summary_html(model_dir: Path, scene: str) -> str:
-    """Report comparing the latest L1, L2, L3 runs of one model on one scene."""
+def build_summary_html(model_dir: Path) -> str:
+    """Report comparing the latest L1, L2, L3 runs of one model on one scene in one experiment round
+    (model_dir = results/<scene>/<experiment>/<model folder>)."""
     model_dir = model_dir.resolve()
     model_folder = "/".join(model_dir.parts[-2:])
-    runs = latest_runs(model_dir, scene)
+    scene, experiment = model_dir.parts[-4:-2]
+    runs = latest_runs(model_dir)
     if not runs:
         raise FileNotFoundError(f"no runs of {scene} under {model_dir}")
     levels = list(runs)
     meta = {k: json.loads((d / "run.json").read_text()) for k, d in runs.items()}
     specs = {k: json.loads((d / "scene.json").read_text()) for k, d in runs.items()}
 
-    parts = [f"<h1>{html.escape(model_folder)}, {html.escape(scene)}</h1>",
+    parts = [f"<h1>{html.escape(model_folder)}, {html.escape(scene)}, 실험 {html.escape(experiment)}</h1>",
              f"<p class='sub'>{html.escape(meta[levels[0]].get('model_id', '-'))}, 단계 {', '.join(levels)}의 최근 실행 비교</p>"]
 
     rows = []
@@ -322,6 +325,6 @@ def build_summary_html(model_dir: Path, scene: str) -> str:
             f"<style>{css}</style></head><body>{''.join(parts)}</body></html>")
 
 
-def write_summary_pdf(model_dir: Path, scene: str) -> Path:
-    """results/<family>/<variant>/<scene>_summary.pdf comparing the model's levels on one scene."""
-    return _print_pdf(build_summary_html(model_dir, scene), model_dir / f"{scene}_summary.pdf")
+def write_summary_pdf(model_dir: Path) -> Path:
+    """results/<scene>/<experiment>/<family>/<variant>/summary.pdf comparing the model's levels on that scene."""
+    return _print_pdf(build_summary_html(model_dir), model_dir / "summary.pdf")

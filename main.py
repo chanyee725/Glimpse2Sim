@@ -7,13 +7,14 @@ The connected camera is detected automatically.
 
 Generate: send a captured scene to a model under input conditions (configs/conditions.yaml: L1 front RGB + depth,
 L2 every RGB view, L3 every RGB view + depth) and save each run to
-results/<model folder>/<condition>/<scene>/<time>/ (e.g. results/gemini/flash/L1/scene01/...), listed in
-results/index.csv.
+results/<scene>/<experiment>/<model folder>/<condition>/<time>/ (e.g. results/scene01/02/gemini/flash/L1/...),
+listed in results/<scene>/<experiment>/index.csv. The experiment round is `current` in configs/experiment.yaml; raise it
+when the prompts or pipeline change.
     uv run main.py generate scene01                          # L1, L2 and L3 with gemini-flash
     uv run main.py generate scene01 --condition L1
     uv run main.py generate scene01 --model gemini-argon --condition L2 L3
     uv run main.py generate scene01 --model all --repeat 3
-    uv run main.py generate scene01 --model gemini-argon --thinking high   # -> results/gemini/argon-high/...
+    uv run main.py generate scene01 --model gemini-argon --thinking high   # -> results/scene01/02/gemini/argon-high/...
 
 Fuse: place all captured frames of a scene with the ChArUco board on the table, correct each frame's depth
 against the board, fuse them into one TSDF and ray cast it into the reference frame as one depth image
@@ -22,21 +23,24 @@ in Rerun.
     uv run main.py fuse scene03 --icp --view
 
 Report: save a one-run PDF report (report.pdf in the run folder), rendered by headless Chrome.
-    uv run main.py report results/gemini/argon/L3/scene01/<time>
-    uv run main.py report results/gemini/*/L3/scene01/*      # several runs at once
+    uv run main.py report results/scene01/02/gemini/argon/L3/<time>
+    uv run main.py report results/scene01/02/gemini/*/L3/*      # several runs at once
 
-Summary: one PDF per model and scene comparing its latest L1, L2 and L3 runs
-(results/<model folder>/<scene>_summary.pdf).
+Summary: one PDF per model and scene comparing its latest L1, L2 and L3 runs in one experiment round
+(results/<scene>/<experiment>/<model folder>/summary.pdf).
     uv run main.py summary scene01 gemini/argon
     uv run main.py summary scene01                            # every model folder that has runs of scene01
+    uv run main.py summary scene01 --experiment 01            # an earlier round (default: the current one)
 
 Assets index: list every object USD on the Isaac Sim asset server and embed it for asset search (once).
     uv run main.py assets-index
 
-View: build the latest generated scene spec in Isaac Sim (extra args go to the Isaac Lab launcher).
+View: build the latest generated scene spec of the current experiment round in Isaac Sim (extra args go to the
+Isaac Lab launcher).
     uv run main.py view scene01                  # latest run of any model and condition
+    uv run main.py view scene01 --experiment 01  # latest run of an earlier round
     uv run main.py view scene01 --model gemini-flash --condition L1
-    uv run main.py view scene01 --spec results/gemini/flash/L3/scene01/<time>/scene.json
+    uv run main.py view scene01 --spec results/scene01/02/gemini/flash/L3/<time>/scene.json
     uv run main.py view scene01 --headless --max-steps 200
     uv run main.py view scene01 --capture        # save sim_capture.png and compare.png in the run folder, exit
 """
@@ -132,7 +136,7 @@ def generate(
 
 def view(
     name: str, camera: str | None, model: str | None, thinking: str | None, condition: str | None,
-    spec: Path | None, max_steps: int, capture: bool, launcher_argv: list[str],
+    experiment: str | None, spec: Path | None, max_steps: int, capture: bool, launcher_argv: list[str],
 ) -> None:
     # Isaac Lab is imported here so capture/generate never start Kit (or its EULA prompt).
     from isaaclab.app import add_launcher_args, launch_simulation
@@ -146,7 +150,7 @@ def view(
         camera, scene_dir = find_scene(name)
     if spec is None:
         folder = load_config("models")["models"][model]["results"] + (f"-{thinking}" if thinking else "") if model else None
-        spec = latest_scene_spec(name, condition, folder)
+        spec = latest_scene_spec(name, condition, folder, experiment)
 
     launcher = argparse.ArgumentParser(prog="main.py view", conflict_handler="resolve")
     launcher.add_argument(
@@ -277,7 +281,8 @@ def main() -> None:
 
     p = sub.add_parser("summary", help="save a PDF comparing a model's levels on one scene")
     p.add_argument("scene", help="scene name, e.g. scene01")
-    p.add_argument("models", nargs="*", help="model folders under results/, e.g. gemini/argon (default: all)")
+    p.add_argument("models", nargs="*", help="model folders, e.g. gemini/argon (default: all)")
+    p.add_argument("--experiment", help="experiment round under results/ (default: current in configs/experiment.yaml)")
 
     sub.add_parser("assets-index", help="build the asset search index (assets/index/)")
 
@@ -287,14 +292,15 @@ def main() -> None:
     p.add_argument("--model", choices=model_names(), help="take the latest run of this model")
     p.add_argument("--thinking", choices=THINKING_LEVELS, help="with --model: runs made with this --thinking override")
     p.add_argument("--condition", choices=conditions, help="take the latest run of this condition")
+    p.add_argument("--experiment", help="take the latest run of this round (default: current in configs/experiment.yaml)")
     p.add_argument("--spec", type=Path, help="scene.json to load (default: the latest run)")
     p.add_argument("--max-steps", type=int, default=-1, help="stop after this many steps; -1 runs until closed")
     p.add_argument("--capture", action="store_true", help="save the spawned scene as sim_capture.png and exit")
 
     args, extra = parser.parse_known_args()
     if args.command == "view":
-        view(str(args.name), args.camera, args.model, args.thinking, args.condition, args.spec, args.max_steps,
-             args.capture, extra)
+        view(str(args.name), args.camera, args.model, args.thinking, args.condition, args.experiment, args.spec,
+             args.max_steps, args.capture, extra)
     elif extra:
         parser.error(f"unrecognized arguments: {' '.join(extra)}")
     elif args.command == "fuse":
@@ -305,13 +311,13 @@ def main() -> None:
         load_dotenv(ROOT / ".env")
         print(f"indexed {build_index()} assets")
     elif args.command == "summary":
-        from glimpse2sim.generation.scene import RESULTS_DIR
+        from glimpse2sim.generation.scene import experiment_dir
         from glimpse2sim.report import write_summary_pdf
 
-        folders = args.models or sorted({str(p.relative_to(RESULTS_DIR).parents[-3])
-                                         for p in RESULTS_DIR.glob(f"*/*/*/{args.scene}/*/scene.json")})
+        root = experiment_dir(args.scene, args.experiment)
+        folders = args.models or sorted({str(p.relative_to(root).parents[-3]) for p in root.glob("*/*/*/*/scene.json")})
         for folder in folders:
-            print(write_summary_pdf(RESULTS_DIR / folder, args.scene))
+            print(write_summary_pdf(root / folder))
     elif args.command == "report":
         from glimpse2sim.report import write_pdf
 

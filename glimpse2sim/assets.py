@@ -8,11 +8,9 @@ Two free libraries, collected by fixed rules (no hand-picking):
   downloaded, and the one whose bounding-box proportions best fit the object's own size_mm is used (this drops
   models that come with a base plate or a scene around them).
 
-Each entry is embedded once; a model's `asset_query` is embedded the same way. Among the TOP_K nearest entries,
-the first that scores at least MIN_SCORE and has the same head noun as the query in one of its names (the last word
-naming the kind of thing: "laptop computer" vs "computer cart" do not match; "smartphone" matches "smart phone"),
-or scores at least SAME_KIND_SCORE, is the match: similarity alone pairs a mouse with a barcode scanner and a
-keyboard with a desk. No such entry means neither library has that kind of object, and the object keeps its shapes.
+Each entry is embedded once; a model's `asset_query` is embedded the same way, and the TOP_K nearest entries are
+the candidates. The embedding only retrieves: which candidate (if any) is the object is decided by the scene model
+itself (glimpse2sim/generation/asset_selection.py), so no similarity threshold or word rule picks the asset.
 
     uv run main.py assets-index      # build assets/index/ once
 """
@@ -37,15 +35,10 @@ INDEX_DIR = ROOT / "assets" / "index"
 EMBED_MODEL = "gemini-embedding-2"
 EMBED_DIMS = 768
 BATCH = 100
-# Cosine thresholds, set from test queries: with the same head noun even 0.59 was right ("felt-tip pen" vs "pen");
-# with different head nouns, wrong pairs reached 0.77 ("black glasses case" vs "sunglasses", "usb flash drive" vs
-# "flash") while the right ones above that were near-synonyms ("game controller" vs "joystick", 0.85).
-MIN_SCORE = 0.50
-SAME_KIND_SCORE = 0.80
 # LVIS v1 category list with synonyms (the same categories as Objaverse's LVIS annotations).
 LVIS_CATEGORIES_URL = ("https://raw.githubusercontent.com/facebookresearch/detectron2/main/"
                        "detectron2/data/datasets/lvis_v1_categories.py")
-TOP_K = 10
+TOP_K = 20  # candidates shown to the model per object
 OBJAVERSE_LICENSES = {"by", "cc0"}  # CC-BY (credit the author) and CC0; non-commercial and no-derivatives are left out
 OBJAVERSE_MAX_FACES = 300_000  # heavier scans slow the simulator down for no visible gain at desk scale
 OBJAVERSE_SHORTLIST = 150  # objects of a category considered (the annotations of each are downloaded)
@@ -56,9 +49,6 @@ NOT_KINDS = set("""a an and the of with without for in on to by
     small large big tiny huge long short tall thick thin round square flat wide narrow mini
     plastic metal metallic wooden wood glass ceramic paper rubber steel aluminum cloth leather
     new old modern simple plain empty full open closed""".split())
-# Head nouns that say little on their own ("glasses case" vs "cigarette case"): these must match with the word before.
-GENERIC_HEADS = {"case", "box", "holder", "stand", "cover", "bag", "pack", "container", "set", "kit", "tray", "rack",
-                 "unit", "part", "piece", "item", "object", "thing", "device", "tool", "accessory"}
 # File-name words that are not part of what the object is.
 NOT_NAMES = {"instanceable", "physics", "collision", "axis", "aligned", "lod", "low", "high", "poly", "var", "variant",
              "base", "asset", "model", "mesh", "prop", "nvd", "pr", "ml", "copy", "free", "lowpoly"}
@@ -196,17 +186,6 @@ class AssetLibrary:
 
         self.client = genai.Client()
 
-    def _same_kind(self, query: str, i: int, score: float) -> bool:
-        if score >= SAME_KIND_SCORE and head_noun(query) not in GENERIC_HEADS:  # "pencil case" is no pencil
-            return True
-        names = self.assets[i].get("names") or [self.assets[i]["text"].split(" (")[0]]
-        theirs = set().union(*(kind_words(n) for n in names))
-        head = head_noun(query)
-        mine = kind_words(re.split(r"\b(?:with|without|in|on|for|from|that|which)\b", query.lower())[0])
-        if head in GENERIC_HEADS:  # only the two-word form ("glassescase") can match
-            mine.discard(head)
-        return score >= MIN_SCORE and bool(mine & theirs)
-
     def _pick_objaverse(self, entry: dict, query: str, query_vec: np.ndarray, size: np.ndarray | None) -> dict | None:
         """A downloadable CC-BY/CC0 object of an LVIS category whose name or tags name its kind, downloaded as GLB:
         of the SHAPE_SHORTLIST closest to the query by name, the one whose proportions best fit `size` (the object's
@@ -238,40 +217,19 @@ class AssetLibrary:
                 "url": a.get("viewerUrl"), "path": glbs[best],
                 "proportion_misfit": None if np.isinf(fits[best]) else round(float(fits[best]), 3)}
 
-    def match(self, queries: list[str], sizes: list | None = None) -> list[dict]:
-        """For each query: where its model comes from (`source`, `path`, and for Objaverse the object's uid, name,
-        license and author), or `path` None if no library has that kind of object; plus the nearest candidates.
-        `sizes` (the objects' extents in any unit) picks among Objaverse models by proportions."""
+    def candidates(self, queries: list[str]) -> tuple[np.ndarray, list[list[dict]]]:
+        """The query vectors, and for each query its TOP_K nearest entries, nearest first, each with its `score`."""
         q = _embed(self.client, queries, "RETRIEVAL_QUERY")
         scores = q @ self.vectors.T
-        results = []
-        for query, qv, row, size in zip(queries, q, scores, sizes or [None] * len(queries)):
-            top = np.argsort(row)[::-1][:TOP_K]
-            result = {"query": query, "source": None, "text": None, "path": None, "score": round(float(row[top[0]]), 3),
-                      "candidates": [{"source": self.assets[i]["source"], "text": self.assets[i]["text"],
-                                      "score": round(float(row[i]), 3)} for i in top[:3]]}
-            for i in top:  # nearest first; an Objaverse category with no usable object passes to the next entry
-                if not self._same_kind(query, i, row[i]):
-                    continue
-                entry = self.assets[i]
-                found = ({"path": entry["path"]} if entry["source"] == "isaac"
-                         else self._pick_objaverse(entry, query, qv, size))
-                if found:
-                    result |= {"source": entry["source"], "text": entry["text"], "score": round(float(row[i]), 3)}
-                    result |= ({"lvis": entry["lvis"]} if entry["source"] == "objaverse" else {}) | found
-                    break
-            results.append(result)
-        return results
+        return q, [[self.assets[i] | {"score": round(float(row[i]), 3)} for i in np.argsort(row)[::-1][:TOP_K]]
+                   for row in scores]
 
-
-def resolve_assets(scene: dict) -> int:
-    """Fill objects[].asset_match from objects[].asset_query in place. Return how many objects got an asset."""
-    objects = [o for o in scene.get("objects", []) if isinstance(o.get("asset_query"), str) and o["asset_query"].strip()]
-    if not objects:
-        return 0
-    sizes = [[(o.get("size_mm") or {}).get(k) for k in ("length", "width", "height")] for o in objects]
-    sizes = [np.array(s, float) if all(isinstance(v, (int, float)) and v > 0 for v in s) else None for s in sizes]
-    matches = AssetLibrary().match([o["asset_query"] for o in objects], sizes)
-    for o, m in zip(objects, matches):
-        o["asset_match"] = m
-    return sum(m["path"] is not None for m in matches)
+    def fetch(self, entry: dict, query: str, query_vec: np.ndarray, size: np.ndarray | None) -> dict | None:
+        """Where the chosen entry's model comes from (`source`, `text`, `path`, and for Objaverse the object's uid,
+        name, license and author), or None if an Objaverse category has no usable object."""
+        found = ({"path": entry["path"]} if entry["source"] == "isaac"
+                 else self._pick_objaverse(entry, query, query_vec, size))
+        if not found:
+            return None
+        return ({"source": entry["source"], "text": entry["text"], "score": entry["score"]}
+                | ({"lvis": entry["lvis"]} if entry["source"] == "objaverse" else {}) | found)

@@ -4,23 +4,41 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from ..config import ROOT
+from ..config import ROOT, load_config
 
 
 RESULTS_DIR = ROOT / "results"
 
 
-def run_dir(model_folder: str, condition: str, scene: str, started: datetime) -> Path:
-    """results/<model folder>/<condition>/<scene>/<time>, e.g. results/gemini/flash/L1/scene01/20261025_134746."""
-    return RESULTS_DIR / model_folder / condition / scene / f"{started:%Y%m%d_%H%M%S}"
+def current_experiment() -> str:
+    """The experiment round new runs go to (configs/experiment.yaml)."""
+    return str(load_config("experiment")["current"])
 
 
-def latest_scene_spec(scene: str, condition: str | None = None, model_folder: str | None = None) -> Path:
-    """Most recent scene.json of a scene, optionally only of one condition and one model."""
-    pattern = f"{model_folder or '*/*'}/{condition or '*'}/{scene}/*/scene.json"
-    specs = sorted(RESULTS_DIR.glob(pattern), key=lambda p: p.stat().st_mtime)
+def experiments(scene: str) -> list[str]:
+    """The experiment rounds a scene has results in, oldest first."""
+    return sorted(p.name for p in (RESULTS_DIR / scene).iterdir() if p.is_dir()) if (RESULTS_DIR / scene).exists() else []
+
+
+def experiment_dir(scene: str, experiment: str | None = None) -> Path:
+    """results/<scene>/<experiment>, the current round by default."""
+    return RESULTS_DIR / scene / (experiment or current_experiment())
+
+
+def run_dir(scene: str, model_folder: str, condition: str, started: datetime) -> Path:
+    """results/<scene>/<experiment>/<model folder>/<condition>/<time> in the current round,
+    e.g. results/scene01/02/gemini/flash/L1/20261025_134746."""
+    return experiment_dir(scene) / model_folder / condition / f"{started:%Y%m%d_%H%M%S}"
+
+
+def latest_scene_spec(scene: str, condition: str | None = None, model_folder: str | None = None,
+                      experiment: str | None = None) -> Path:
+    """Most recent scene.json of a scene in one experiment round, optionally only of one condition and one model."""
+    root = experiment_dir(scene, experiment)
+    pattern = f"{model_folder or '*/*'}/{condition or '*'}/*/scene.json"
+    specs = sorted(root.glob(pattern), key=lambda p: p.stat().st_mtime)
     if not specs:
-        raise FileNotFoundError(f"no results/{pattern}")
+        raise FileNotFoundError(f"no {root.relative_to(ROOT)}/{pattern}")
     return specs[-1]
 
 

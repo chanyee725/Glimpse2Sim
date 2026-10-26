@@ -40,7 +40,7 @@ Parts:
 
 Ready-made models:
 - For every object, write `asset_query`: a short English search phrase for a 3D model library that names the kind of object, ending with its noun, plus the details that set its look ("black wireless computer mouse", "white ceramic coffee mug", "red felt-tip pen with cap").
-- The library is searched for a model of that same kind; one is used only if found, and the object is otherwise shown with your shapes. So name the object as it is, not as something similar.
+- The library is searched with your phrase, and you will then be shown the nearest candidates and choose the one that is the same kind of object, or none; with none, the object is shown with your shapes. So name the object as it is, not as something similar.
 - Still give the object's `shape`, `dimensions`, and `size_mm` as usual: a found model is scaled to them, and the shapes remain the object's collision body.
 
 Appearance:

@@ -6,8 +6,13 @@
 import html
 import importlib
 import json
+import os
+import signal
 import subprocess
 import sys
+import threading
+import time
+from collections import deque
 from pathlib import Path
 
 import pandas as pd
@@ -24,12 +29,13 @@ for _module in (glimpse2sim.config, glimpse2sim.models, glimpse2sim.generation.s
     importlib.reload(_module)
 
 from glimpse2sim.config import ROOT, load_config  # noqa: E402
-from glimpse2sim.generation.scene import RESULTS_DIR  # noqa: E402
+from glimpse2sim.generation.scene import RESULTS_DIR, current_experiment, experiment_dir, experiments  # noqa: E402
 from glimpse2sim.models import THINKING_LEVELS, model_names, thinking_setting  # noqa: E402
 from glimpse2sim.report import latest_runs, write_pdf, write_summary_pdf  # noqa: E402
 
 OUTPUT_DIR = ROOT / "outputs"
-LOG_LINES = 300  # lines of the running command's output kept on screen
+LOG_LINES = 1000  # lines of the running job's output kept in the log panel
+POLL_S = 1.0  # how often the job panel refreshes while a job runs
 # Rough per-call tokens for a cost estimate when a model has no earlier run of that condition.
 EST_TOKENS_PER_IMAGE, EST_PROMPT_TOKENS, EST_ANSWER_TOKENS = 1300, 6000, 3500
 # Thinking tokens per call by depth, from the runs so far (Flash L3 at its default thought about 9k tokens);
@@ -88,6 +94,19 @@ h1, h2, h3 { color: var(--ink); letter-spacing: -0.01em; }
   border-top: 1px solid var(--line); padding-top: 0.8rem; margin-top: 0.4rem; }
 .summary b { font-size: 1.5rem; }
 .summary span { color: var(--muted); font-size: 0.9rem; }
+.job { display: flex; align-items: center; gap: 0.7rem; font-variant-numeric: tabular-nums; }
+.job b { font-size: 1.02rem; }
+.job span { color: var(--muted); font-size: 0.88rem; }
+.dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.dot.running { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.dot.done { background: #6CC08B; } .dot.failed { background: #E06C5F; } .dot.stopped { background: var(--muted); }
+@keyframes pulse { 50% { opacity: 0.3; } }
+/* column-reverse keeps the panel scrolled to the newest line without any script */
+.log { height: 340px; overflow-y: auto; display: flex; flex-direction: column-reverse; background: #12171B;
+  border: 1px solid var(--line); border-radius: 10px; margin-top: 0.6rem; }
+/* Streamlit renders the <pre> as its own stMarkdownPre block */
+.log pre, .log [data-testid="stMarkdownPre"] { margin: 0; background: none; border: none; padding: 0.7rem 0.9rem; font: 0.8rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #C9D2D8; white-space: pre-wrap; word-break: break-all; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 """, unsafe_allow_html=True)
@@ -98,52 +117,146 @@ def captured_scenes() -> dict[str, Path]:
     return {p.name: p for p in sorted(OUTPUT_DIR.glob("*/*")) if any(p.glob("*_color.png"))}
 
 
-def run_streaming(cmd: list[str], box) -> int:
-    """Run a main.py command and show its output live in `box`. Return the exit code."""
-    proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    lines: list[str] = []
-    for line in proc.stdout:
-        lines.append(line.rstrip("\n"))
-        box.code("\n".join(lines[-LOG_LINES:]), language=None)
-    return proc.wait()
+class Job:
+    """A sequence of main.py commands run in a background thread, so the page stays responsive and can stop it.
+
+    The thread never calls Streamlit; the job panel reads `state`, `stage`, `log`, and `message` on each refresh.
+    """
+
+    def __init__(self, title: str, work):
+        self.title, self.stage, self.message = title, "", ""
+        self.state = "running"  # running, done, failed, stopped
+        self.log: deque[str] = deque(maxlen=LOG_LINES)
+        self.errors: list[str] = []
+        self.started, self.ended = time.time(), None
+        self.proc: subprocess.Popen | None = None
+        self.stopping = threading.Event()
+        self.shown_end = False  # the page has rerun once since the job ended
+        threading.Thread(target=self._main, args=(work,), daemon=True).start()
+
+    def _main(self, work) -> None:
+        try:
+            self.message = work(self) or ""
+        except Exception as e:
+            self.errors.append(str(e))
+        if self.stopping.is_set():
+            self.message = "중단했습니다. 이미 끝난 실행은 결과 탭에 남아 있습니다."
+        self.state = "stopped" if self.stopping.is_set() else "failed" if self.errors else "done"
+        self.ended = time.time()
+
+    def run(self, cmd: list[str]) -> int:
+        """Run one command, appending its output to the log. Return its exit code (-1 if stopped first)."""
+        if self.stopping.is_set():
+            return -1
+        self.log.append("$ " + " ".join(cmd[1:]))
+        # A new session gives the command its own process group, so stopping also ends Isaac Sim's children.
+        self.proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                     bufsize=1, start_new_session=True, env=os.environ | {"PYTHONUNBUFFERED": "1"})
+        for line in self.proc.stdout:
+            self.log.append(line.rstrip("\n"))
+        return self.proc.wait()
+
+    def stop(self) -> None:
+        self.stopping.set()
+        proc = self.proc
+        if proc and proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            threading.Timer(5, lambda: proc.poll() is None and os.killpg(proc.pid, signal.SIGKILL)).start()
+
+    @property
+    def running(self) -> bool:
+        return self.state == "running"
+
+
+@st.cache_resource
+def _job_slot() -> dict:
+    """The current job, kept across reruns and page reloads (one job at a time for the whole server)."""
+    return {"job": None}
+
+
+def current_job() -> Job | None:
+    return _job_slot()["job"]
+
+
+def busy() -> bool:
+    return bool(current_job() and current_job().running)
+
+
+def start_job(title: str, work) -> None:
+    if not busy():
+        _job_slot()["job"] = Job(title, work)
+        st.rerun()
+
+
+@st.fragment(run_every=POLL_S)
+def job_panel() -> None:
+    """Status, a stop button while running, and the log in a fixed-height panel that follows the newest line."""
+    job = current_job()
+    if job is None:
+        return
+    if not job.running and not job.shown_end:
+        job.shown_end = True
+        st.rerun(scope="app")  # re-enable the start buttons and pick up the new results
+    elapsed = int((job.ended or time.time()) - job.started)
+    word = {"running": "실행 중", "done": "완료", "failed": "오류", "stopped": "중단됨"}[job.state]
+    detail = job.stage if job.running else (job.message or job.stage)
+    with st.container(border=True):
+        head, button = st.columns([6, 1], vertical_alignment="center")
+        head.markdown(f"<div class='job'><span class='dot {job.state}'></span><b>{word}</b>"
+                      f"<span>{html.escape(job.title)} · {html.escape(detail)} · {elapsed // 60}:{elapsed % 60:02d}"
+                      f"</span></div>", unsafe_allow_html=True)
+        if job.running:
+            stopping = job.stopping.is_set()
+            if button.button("중단하는 중" if stopping else "중단", key="job_stop", width="stretch", disabled=stopping):
+                job.stop()
+                st.rerun(scope="fragment")
+        elif button.button("닫기", key="job_close", type="tertiary", width="stretch"):
+            _job_slot()["job"] = None
+            st.rerun(scope="app")
+        for e in job.errors:
+            st.error(e)
+        st.markdown(f"<div class='log'><pre>{html.escape(chr(10).join(job.log)) or '…'}</pre></div>",
+                    unsafe_allow_html=True)
 
 
 def all_runs() -> pd.DataFrame:
-    """One row per run folder: results/<family>/<variant>/<condition>/<scene>/<time>/run.json."""
+    """One row per run folder: results/<scene>/<experiment>/<family>/<variant>/<condition>/<time>/run.json."""
     rows = []
-    for run_json in RESULTS_DIR.glob("*/*/*/*/*/run.json"):
+    for run_json in RESULTS_DIR.glob("*/*/*/*/*/*/run.json"):
         d = run_json.parent
-        family, variant, condition, scene, time = d.relative_to(RESULTS_DIR).parts
+        scene, experiment, family, variant, condition, time = d.relative_to(RESULTS_DIR).parts
         r = json.loads(run_json.read_text())
         rows.append({
-            "time": time, "model": f"{family}/{variant}", "condition": condition, "scene": scene,
+            "experiment": experiment, "time": time, "model": f"{family}/{variant}", "condition": condition, "scene": scene,
             "images": len(r.get("images", [])), "objects": r.get("num_objects"), "valid_json": r.get("valid_json"),
             "thinking": r.get("thinking", "-"), "in_tokens": r.get("input_tokens"),
             "out_tokens": r.get("output_tokens"), "thinking_tokens": r.get("thinking_tokens"),
             "cost_usd": round(r.get("cost_usd") or 0.0, 4), "latency_s": round(r.get("latency_s") or 0.0, 1),
             "rendered": (d / "compare.png").exists(), "prompt_sha": r.get("prompt_sha", "-"), "path": str(d),
         })
-    cols = ["time", "model", "condition", "scene", "images", "objects", "valid_json", "rendered", "thinking",
+    cols = ["experiment", "time", "model", "condition", "scene", "images", "objects", "valid_json", "rendered", "thinking",
             "in_tokens", "out_tokens", "thinking_tokens", "cost_usd", "latency_s", "prompt_sha", "path"]
     return pd.DataFrame(rows, columns=cols).sort_values("time", ascending=False, ignore_index=True)
 
 
-def render_run(run_dir: Path, scene: str, box) -> int:
+def render_run(job: Job, run_dir: Path, scene: str) -> int:
     """Build a run's scene.json in Isaac Sim and save sim_capture.png and compare.png next to it."""
-    return run_streaming([sys.executable, "main.py", "view", scene, "--spec", str(run_dir / "scene.json"),
-                          "--capture"], box)
+    return job.run([sys.executable, "main.py", "view", scene, "--spec", str(run_dir / "scene.json"), "--capture"])
 
 
-def render_all(rows: pd.DataFrame, box) -> list[str]:
-    """Render each run in turn, one Isaac Sim launch per run. Return the runs that failed."""
-    failed = []
-    progress = st.progress(0.0)
+def render_all(job: Job, rows: pd.DataFrame) -> int:
+    """Render each run in turn, one Isaac Sim launch per run. Return how many were rendered."""
+    done = 0
     for k, row in enumerate(rows.itertuples(), 1):
-        progress.progress((k - 1) / len(rows), text=f"Isaac Sim 렌더 {k}/{len(rows)}: {row.model}, {row.condition}")
-        if render_run(Path(row.path), row.scene, box) != 0:
-            failed.append(f"{row.model} {row.condition} {row.time}")
-    progress.progress(1.0, text=f"Isaac Sim 렌더 {len(rows)}개 완료")
-    return failed
+        job.stage = f"Isaac Sim 렌더 {k}/{len(rows)}: {row.model}, {row.condition}"
+        code = render_run(job, Path(row.path), row.scene)
+        if job.stopping.is_set():
+            break
+        if code != 0:
+            job.errors.append(f"렌더하지 못했습니다: {row.model} {row.condition} {row.time} (exit {code})")
+        else:
+            done += 1
+    return done
 
 
 def images_sent(condition: dict, n_frames: int) -> tuple[int, int]:
@@ -201,7 +314,7 @@ def pdf_actions(d: Path, run: pd.Series) -> None:
     pdf = d / "report.pdf"
     if pdf.exists():
         st.download_button("PDF 보고서 저장", pdf.read_bytes(), type="primary", width="stretch", mime="application/pdf",
-                           file_name=f"{run['model'].replace('/', '-')}_{run['condition']}_{run['scene']}_{run['time']}.pdf",
+                           file_name=f"{run['scene']}_{run['experiment']}_{run['model'].replace('/', '-')}_{run['condition']}_{run['time']}.pdf",
                            key=f"dl_{d}")
     make = st.button("보고서 다시 만들기" if pdf.exists() else "PDF 보고서 만들기", key=f"pdf_{d}",
                      type="tertiary" if pdf.exists() else "primary", width="stretch")
@@ -218,7 +331,7 @@ def show_run(run: pd.Series) -> None:
     d = Path(run["path"])
     head, actions = st.columns([5, 2], vertical_alignment="center")
     with head:
-        st.markdown(f"### {run['model']}, {run['condition']}, {run['scene']}")
+        st.markdown(f"### {run['model']}, {run['condition']}, {run['scene']}, 실험 {run['experiment']}")
         st.markdown(f"<p class='hint'>{run['time']}</p>", unsafe_allow_html=True)
     with actions:
         pdf_actions(d, run)
@@ -237,12 +350,14 @@ def show_run(run: pd.Series) -> None:
         st.image(str(d / "compare.png"), caption="왼쪽 사진, 오른쪽 Isaac Sim 렌더")
     if spec_path.exists():
         label = "Isaac Sim에서 다시 렌더" if (d / "compare.png").exists() else "Isaac Sim에서 렌더"
-        if st.button(label, key=f"cap_{d}"):
-            with st.spinner("Isaac Sim을 띄워 렌더하는 중입니다. 1분 정도 걸립니다."):
-                code = render_run(d, run["scene"], st.empty())
-            if code == 0:
-                st.rerun()
-            st.error(f"렌더하지 못했습니다 (exit {code}). 위 로그를 확인하세요.")
+        if st.button(label, key=f"cap_{d}", disabled=busy()):
+            def work(job: Job) -> str:
+                job.stage = "Isaac Sim 렌더"
+                code = render_run(job, d, run["scene"])
+                if code > 0:
+                    job.errors.append(f"렌더하지 못했습니다 (exit {code}).")
+                return "렌더를 마쳤습니다."
+            start_job(f"렌더: {run['model']}, {run['condition']}", work)
 
     boxes = sorted(d.glob("*_boxes.png"))
     if boxes:
@@ -395,54 +510,77 @@ with tab_run:
                         unsafe_allow_html=True)
                 render_after = st.checkbox("끝나면 Isaac Sim에서 렌더", value=True, key="render_after",
                                            help="새로 생긴 실행마다 Isaac Sim 창이 잠깐 열려 사진을 찍고 닫힙니다.")
-                start = st.button("실행", type="primary", width="stretch", disabled=calls == 0)
+                start = st.button("실행 중…" if busy() else "실행", type="primary", width="stretch",
+                                  disabled=calls == 0 or busy())
+                st.markdown(f"<p class='hint' style='margin-top:0.4rem'>결과는 실험 {current_experiment()} "
+                            f"(results/{html.escape(scene)}/{current_experiment()})에 쌓입니다. 프롬프트나 파이프라인을 바꾸면 "
+                            "configs/experiment.yaml의 번호를 올리세요.</p>", unsafe_allow_html=True)
 
         if calls == 0:
             st.caption("모델과 단계를 하나 이상 고르면 실행할 수 있습니다.")
         if start:
-            st.markdown("<div class='section'>실행 기록</div>", unsafe_allow_html=True)
-            box = st.empty()
-            failed = []
             before = set(runs["path"])
-            for m in chosen_models:
-                code = run_streaming([sys.executable, "main.py", "generate", scene, "--model", m,
-                                      "--condition", *chosen_levels, "--repeat", str(repeat),
-                                      *(["--thinking", thinking] if thinking else [])], box)
-                if code != 0:
-                    failed.append(m)
-            if failed:
-                st.error(f"{', '.join(failed)} 실행이 중간에 멈췄습니다. 위 로그의 마지막 오류를 확인하세요.")
-            new = all_runs()
-            new = new[~new["path"].isin(before) & new["valid_json"].fillna(False).astype(bool)]
-            if render_after and not new.empty:
-                not_rendered = render_all(new, box)
-                if not_rendered:
-                    st.error(f"렌더하지 못한 실행: {', '.join(not_rendered)}. 위 로그를 확인하세요.")
-            st.success(f"새 실행 {len(new)}개를 마쳤습니다. 결과 탭에서 확인하세요.")
+
+            def work(job: Job) -> str:
+                for k, m in enumerate(chosen_models, 1):
+                    job.stage = f"생성 {k}/{len(chosen_models)}: {m}"
+                    code = job.run([sys.executable, "main.py", "generate", scene, "--model", m,
+                                    "--condition", *chosen_levels, "--repeat", str(repeat),
+                                    *(["--thinking", thinking] if thinking else [])])
+                    if job.stopping.is_set():
+                        return ""
+                    if code != 0:
+                        job.errors.append(f"{m} 실행이 중간에 멈췄습니다 (exit {code}). 로그의 마지막 오류를 확인하세요.")
+                new = all_runs()
+                new = new[~new["path"].isin(before) & new["valid_json"].fillna(False).astype(bool)]
+                if render_after and not new.empty:
+                    render_all(job, new)
+                return f"새 실행 {len(new)}개를 마쳤습니다. 결과 탭에서 확인하세요."
+
+            start_job(f"{scene}: {', '.join(chosen_models)} × {', '.join(chosen_levels)}", work)
 
 with tab_results:
-    if runs.empty:
-        st.info("아직 실행한 결과가 없습니다. 실행 탭에서 모델과 단계를 골라 실행해 보세요.")
+    # Results are kept per scene, then per experiment round, then per model: pick them in that order.
+    notes = load_config("experiment").get("notes") or {}
+    r1, r2, r3 = st.columns([2, 2, 3])
+    res_scenes = sorted(runs["scene"].unique())
+    res_scene = r1.selectbox("장면", res_scenes, key="res_scene") if res_scenes else None
+    with_runs = experiments(res_scene) if res_scene else []
+    rounds = sorted(set(with_runs) | {current_experiment()})
+    # Open on the current round once it has runs, until then on the latest round that does.
+    default = current_experiment() if current_experiment() in with_runs or not with_runs else with_runs[-1]
+    exp = r2.selectbox("실험", rounds, index=rounds.index(default), key="res_experiment",
+                       format_func=lambda e: f"{e} (현재)" if e == current_experiment() else e,
+                       help="프롬프트나 파이프라인이 바뀔 때마다 번호를 올립니다 (configs/experiment.yaml).")
+    runs = runs[(runs["scene"] == res_scene) & (runs["experiment"] == exp)]
+    res_models = sorted(runs["model"].unique())
+    res_model = r3.selectbox("모델", res_models, key="res_model") if res_models else None
+    if notes.get(exp):
+        st.markdown(f"<p class='hint'>실험 {html.escape(exp)}: {html.escape(str(notes[exp]))}</p>",
+                    unsafe_allow_html=True)
+    if res_model is None:
+        st.info(f"{res_scene or '이 장면'}의 실험 {exp}에는 아직 실행한 결과가 없습니다. "
+                "실행 탭에서 모델과 단계를 골라 실행해 보세요.")
     else:
+        runs = runs[runs["model"] == res_model]
+        model_dir = experiment_dir(res_scene, exp) / res_model
         with st.container(border=True):
-            st.markdown("<div class='section'>모델별 종합 보고서</div><p class='hint'>한 모델의 L1~L3 최근 실행을 "
-                        "한 장면 기준으로 모아 비교합니다.</p>", unsafe_allow_html=True)
-            s1, s2, s3, s4 = st.columns([3, 2, 2, 2], vertical_alignment="bottom")
-            sum_model = s1.selectbox("모델", sorted(runs["model"].unique()), key="sum_model")
-            sum_scene = s2.selectbox("장면", sorted(runs[runs["model"] == sum_model]["scene"].unique()), key="sum_scene")
-            sum_pdf = RESULTS_DIR / sum_model / f"{sum_scene}_summary.pdf"
-            if s3.button("종합 보고서 만들기" if not sum_pdf.exists() else "다시 만들기", key="sum_make", width="stretch"):
+            st.markdown("<div class='section'>종합 보고서</div><p class='hint'>이 모델의 L1~L3 최근 실행을 모아 "
+                        "비교합니다.</p>", unsafe_allow_html=True)
+            sum_pdf = model_dir / "summary.pdf"
+            s1, s2, _ = st.columns([2, 2, 5])
+            if s1.button("종합 보고서 만들기" if not sum_pdf.exists() else "다시 만들기", key="sum_make", width="stretch"):
                 try:
                     with st.spinner("종합 보고서를 만드는 중입니다."):
-                        write_summary_pdf(RESULTS_DIR / sum_model, sum_scene)
+                        write_summary_pdf(model_dir)
                 except Exception as e:  # e.g. no Chrome, or no finished run
                     st.error(f"종합 보고서를 만들지 못했습니다: {e}")
             if sum_pdf.exists():
-                s4.download_button("PDF 저장", sum_pdf.read_bytes(), type="primary", width="stretch",
-                                   file_name=f"{sum_model.replace('/', '-')}_{sum_scene}_summary.pdf",
+                s2.download_button("PDF 저장", sum_pdf.read_bytes(), type="primary", width="stretch",
+                                   file_name=f"{res_scene}_{exp}_{res_model.replace('/', '-')}_summary.pdf",
                                    mime="application/pdf", key="sum_dl")
             # What the report will compare: this model's latest run of each level, as rendered.
-            level_runs = latest_runs(RESULTS_DIR / sum_model, sum_scene)
+            level_runs = latest_runs(model_dir)
             cols = st.columns(max(len(level_runs), 1))
             for col, (level, run_dir) in zip(cols, level_runs.items()):
                 shot = run_dir / "sim_capture.png"
@@ -452,27 +590,22 @@ with tab_results:
                     col.markdown(f"<p class='hint'>{level}, {run_dir.name}: 아직 렌더하지 않았습니다.</p>",
                                  unsafe_allow_html=True)
 
-        st.markdown("<div class='section'>실행 목록</div><p class='hint'>표에서 거른 뒤 아래에서 실행 하나를 골라 "
-                    "자세히 봅니다. 위 종합 보고서의 모델 선택과는 따로 움직입니다.</p>", unsafe_allow_html=True)
-        f1, f2, f3 = st.columns(3)
-        pick = lambda col, key, label: col.multiselect(label, sorted(runs[key].unique()), key=f"filter_{key}", placeholder="전체")  # noqa: E731
-        sel = {"model": pick(f1, "model", "모델"), "condition": pick(f2, "condition", "단계"),
-               "scene": pick(f3, "scene", "장면")}
-        view = runs
-        for col, values in sel.items():
-            if values:
-                view = view[view[col].isin(values)]
-        st.dataframe(view.drop(columns=["path"]), hide_index=True, width="stretch")
+        st.markdown("<div class='section'>실행 목록</div>", unsafe_allow_html=True)
+        levels = st.pills("단계", sorted(runs["condition"].unique()), selection_mode="multi", key="res_levels",
+                          help="고르지 않으면 모든 단계를 보여줍니다.")
+        view = runs[runs["condition"].isin(levels)] if levels else runs
+        st.dataframe(view.drop(columns=["path", "experiment", "scene", "model"]), hide_index=True, width="stretch")
         pending = view[~view["rendered"] & view["valid_json"].fillna(False).astype(bool)]
         if not pending.empty and st.button(f"렌더하지 않은 실행 {len(pending)}개를 Isaac Sim에서 렌더",
-                                           key="render_pending"):
-            not_rendered = render_all(pending, st.empty())
-            if not_rendered:
-                st.error(f"렌더하지 못한 실행: {', '.join(not_rendered)}. 위 로그를 확인하세요.")
-            else:
-                st.rerun()
+                                           key="render_pending", disabled=busy()):
+            start_job(f"렌더 {len(pending)}개", lambda job: f"{render_all(job, pending)}개를 렌더했습니다.")
         if not view.empty:
-            labels = [f"{r.time}, {r.model}, {r.condition}, {r.scene}" for r in view.itertuples()]
+            labels = [f"{r.condition}, {r.time}" for r in view.itertuples()]
             i = st.selectbox("자세히 볼 실행", range(len(view)), format_func=lambda k: labels[k])
             st.divider()
             show_run(view.iloc[i])
+
+# The running (or last) job, below both tabs so it stays in view whichever tab is open.
+if current_job():
+    st.markdown("<div class='section' style='margin-top:1.2rem'>실행 기록</div>", unsafe_allow_html=True)
+job_panel()
